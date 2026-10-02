@@ -3,6 +3,7 @@ using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 using DrasiWake.Core.Pipeline;
+using DrasiWake.Core.Tests;
 
 namespace DrasiWake.Core.Tests.Pipeline;
 
@@ -63,16 +64,22 @@ public sealed class OutboxDispatcherTests
     {
         var binding = CreateBinding();
         var store = new RecordingStore();
-        var item = CreateItem();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var item = CreateItem() with
+        {
+            CreatedAtUtc = timeProvider.GetUtcNow(),
+            NextAttemptAtUtc = timeProvider.GetUtcNow()
+        };
         await store.CreateOrUpdatePendingWakeAsync(item, CancellationToken.None);
         var sink = new FailingSink(new HttpRequestException("Gateway unavailable."));
-        var dispatcher = new OutboxDispatcher(store, sink, CreateRegistry(binding));
+        var dispatcher = new OutboxDispatcher(store, sink, CreateRegistry(binding), timeProvider);
 
         await dispatcher.DispatchOneAsync(item, CancellationToken.None);
 
         Assert.Equal(item.IdempotencyKey, sink.LastRequest!.IdempotencyKey);
         Assert.Equal(item.Id, store.LastRetryOutboxId);
         Assert.Equal(1, store.LastRetryAttemptCount);
+        Assert.Equal(timeProvider.GetUtcNow().AddSeconds(1), store.LastRetryNextAttemptUtc);
         Assert.Equal("dispatch.transient_failure", store.LastRetryReason);
         Assert.Equal(0, store.AcceptanceWrites);
     }
@@ -186,6 +193,7 @@ public sealed class OutboxDispatcherTests
         public int RetryWrites { get; private set; }
         public Guid? LastRetryOutboxId { get; private set; }
         public int LastRetryAttemptCount { get; private set; }
+        public DateTimeOffset? LastRetryNextAttemptUtc { get; private set; }
         public string? LastRetryReason { get; private set; }
         public Guid? DeadLetterOutboxId { get; private set; }
         public string? DeadLetterReason { get; private set; }
@@ -224,6 +232,7 @@ public sealed class OutboxDispatcherTests
             RetryWrites++;
             LastRetryOutboxId = outboxId;
             LastRetryAttemptCount = attemptCount;
+            LastRetryNextAttemptUtc = nextAttemptUtc;
             LastRetryReason = reasonCode;
             return ValueTask.CompletedTask;
         }
