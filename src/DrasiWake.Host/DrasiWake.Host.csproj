@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\DrasiWake.Core\DrasiWake.Core.csproj" />
+    <ProjectReference Include="..\DrasiWake.Adapters.DrasiServer\DrasiWake.Adapters.DrasiServer.csproj" />
+    <ProjectReference Include="..\DrasiWake.Adapters.OpenClaw\DrasiWake.Adapters.OpenClaw.csproj" />
+    <ProjectReference Include="..\DrasiWake.Persistence.SonnetDB\DrasiWake.Persistence.SonnetDB.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
