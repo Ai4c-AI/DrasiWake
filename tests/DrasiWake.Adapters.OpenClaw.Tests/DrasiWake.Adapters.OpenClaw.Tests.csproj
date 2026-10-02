@@ -22,4 +22,8 @@
     <ProjectReference Include="..\..\src\DrasiWake.Adapters.OpenClaw\DrasiWake.Adapters.OpenClaw.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Fixtures\accepted-running-response.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
