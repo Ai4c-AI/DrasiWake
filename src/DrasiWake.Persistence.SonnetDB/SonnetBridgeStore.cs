@@ -22,6 +22,16 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         var existing = await context.WakeOutbox.SingleOrDefaultAsync(
             wake => wake.Id == item.Id,
             cancellationToken);
+        existing ??= await context.WakeOutbox
+            .Where(wake => wake.BindingId == item.BindingId &&
+                           wake.SessionId == item.SessionId &&
+                           wake.SnapshotFingerprint == item.SnapshotFingerprint &&
+                           (wake.Status == WakeOutboxStatus.Pending ||
+                            wake.Status == WakeOutboxStatus.RetryScheduled ||
+                            wake.Status == WakeOutboxStatus.Dispatching))
+            .OrderBy(wake => wake.CreatedAtUtc)
+            .ThenBy(wake => wake.Id)
+            .FirstOrDefaultAsync(cancellationToken);
         if (existing is not null)
         {
             if (existing.Status is not (WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled))
@@ -40,6 +50,55 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
 
         await context.SaveChangesAsync(cancellationToken);
         return ToDomain(existing);
+    }
+
+    public async ValueTask RecordRejectedWakeAsync(
+        WakeOutboxItem item,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        if (item.Status != WakeOutboxStatus.DeadLetter)
+            throw new ArgumentException("Rejected wake records must be dead letters.", nameof(item));
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var exists = await context.WakeOutbox.AnyAsync(wake => wake.Id == item.Id, cancellationToken);
+        if (exists)
+            return;
+
+        var rejected = ToEntity(item);
+        rejected.LastErrorCode = reasonCode;
+        context.WakeOutbox.Add(rejected);
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async ValueTask SupersedePendingWakesAsync(
+        string bindingId,
+        string sessionId,
+        string currentFingerprint,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bindingId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(currentFingerprint);
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var pending = await context.WakeOutbox
+            .Where(wake => wake.BindingId == bindingId &&
+                           wake.SessionId == sessionId &&
+                           wake.SnapshotFingerprint != currentFingerprint &&
+                           (wake.Status == WakeOutboxStatus.Pending || wake.Status == WakeOutboxStatus.RetryScheduled))
+            .ToListAsync(cancellationToken);
+        foreach (var wake in pending)
+        {
+            wake.Status = WakeOutboxStatus.Superseded;
+            wake.LastErrorCode = "snapshot.superseded";
+            wake.Version++;
+        }
+
+        if (pending.Count > 0)
+            await context.SaveChangesAsync(cancellationToken);
     }
 
     public async ValueTask<IReadOnlyList<WakeOutboxItem>> LoadDispatchableAsync(
@@ -70,10 +129,13 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
 
     public async ValueTask MarkAcceptedWithCheckpointAsync(
         Guid outboxId,
+        WakeAcceptance acceptance,
         Core.Domain.SnapshotCheckpoint checkpoint,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(acceptance);
         ArgumentNullException.ThrowIfNull(checkpoint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(acceptance.InvocationId);
         await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
@@ -87,6 +149,8 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
 
         if (wake.Status is WakeOutboxStatus.Accepted or WakeOutboxStatus.Executing or WakeOutboxStatus.Completed)
         {
+            if (!string.Equals(wake.InvocationId, acceptance.InvocationId, StringComparison.Ordinal))
+                throw new InvalidOperationException("Repeated acceptance must refer to the original Gateway invocation.");
             var acceptedCheckpoint = await context.SnapshotCheckpoints.FindAsync(
                 [checkpoint.BindingId, checkpoint.SessionId],
                 cancellationToken);
@@ -106,6 +170,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         }
 
         wake.Status = WakeOutboxStatus.Accepted;
+        wake.InvocationId = acceptance.InvocationId;
         wake.Version++;
         await context.SaveChangesAsync(cancellationToken);
 
@@ -130,6 +195,37 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
 
         await context.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async ValueTask UpdateExecutionStatusAsync(
+        WakeExecutionStatus status,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(status);
+        ArgumentException.ThrowIfNullOrWhiteSpace(status.InvocationId);
+
+        var targetStatus = status.State switch
+        {
+            "Running" => WakeOutboxStatus.Executing,
+            "Completed" => WakeOutboxStatus.Completed,
+            "Uncertain" => WakeOutboxStatus.DeadLetter,
+            _ => throw new ArgumentException($"Unsupported Gateway invocation state '{status.State}'.", nameof(status))
+        };
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var wake = await context.WakeOutbox.SingleAsync(
+            item => item.InvocationId == status.InvocationId,
+            cancellationToken);
+        if (wake.Status == WakeOutboxStatus.Completed)
+            return;
+        if (wake.Status is not (WakeOutboxStatus.Accepted or WakeOutboxStatus.Executing))
+            throw new InvalidOperationException($"Outbox item in state '{wake.Status}' cannot receive execution status.");
+
+        wake.Status = targetStatus;
+        if (targetStatus == WakeOutboxStatus.DeadLetter)
+            wake.LastErrorCode = "gateway.invocation_uncertain";
+        wake.Version++;
+        await context.SaveChangesAsync(cancellationToken);
     }
 
     public async ValueTask MarkRetryScheduledAsync(

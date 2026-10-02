@@ -107,13 +107,14 @@ public sealed class ContractRegistryLoader
             AddError("rate.policy_invalid", "Rate permit limit and window must be positive.");
 
         var schemaPath = item.FactSchemaPath;
+        string? resolvedSchemaPath = null;
         if (string.IsNullOrWhiteSpace(schemaPath))
         {
             AddError("schema.path_required", "Fact schema path is required.");
         }
         else
         {
-            var resolvedSchemaPath = Path.GetFullPath(Path.Combine(registryDirectory, schemaPath));
+            resolvedSchemaPath = Path.GetFullPath(Path.Combine(registryDirectory, schemaPath));
             if (!File.Exists(resolvedSchemaPath))
             {
                 AddError("schema.missing", $"Fact schema does not exist: {schemaPath}");
@@ -155,7 +156,7 @@ public sealed class ContractRegistryLoader
             item.AggregateKeyPointer,
             canonicalIdentity,
             item.MetaSkill!,
-            new BridgeContract(item.ContractVersion ?? "1.0.0", schemaPath!),
+            new BridgeContract(item.ContractVersion ?? "1.0.0", resolvedSchemaPath!),
             item.MaxPayloadBytes,
             item.TriggerPhrases is { } triggerPhrases ? triggerPhrases : Array.Empty<string>(),
             new RetryPolicy(item.Retry!.MaxAttempts, TimeSpan.FromSeconds(item.Retry.MaxAgeSeconds)),

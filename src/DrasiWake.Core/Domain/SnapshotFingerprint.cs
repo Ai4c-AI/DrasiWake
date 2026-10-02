@@ -14,16 +14,20 @@ public static class SnapshotFingerprint
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        var rows = snapshot.Rows
-            .Select(Canonicalize)
-            .Select(row => row?.ToJsonString() ?? "null")
-            .Select(json => (Json: json, Utf8: Encoding.UTF8.GetBytes(json)))
-            .OrderBy(item => item.Utf8, Utf8Comparer)
-            .Select(item => item.Json);
+        var rows = CanonicalizeRows(snapshot.Rows)
+            .Select(row => row?.ToJsonString() ?? "null");
         var canonicalJson = $"[{string.Join(',', rows)}]";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
+
+    public static IReadOnlyList<JsonNode?> CanonicalizeRows(IEnumerable<JsonNode?> rows)
+        => rows
+            .Select(Canonicalize)
+            .Select(row => (Node: row, Utf8: Encoding.UTF8.GetBytes(row?.ToJsonString() ?? "null")))
+            .OrderBy(item => item.Utf8, Utf8Comparer)
+            .Select(item => item.Node)
+            .ToArray();
 
     private static JsonNode? Canonicalize(JsonNode? node)
     {

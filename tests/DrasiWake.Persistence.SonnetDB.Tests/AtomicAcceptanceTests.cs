@@ -44,10 +44,12 @@ public sealed class AtomicAcceptanceTests
                 pendingWake.SessionId,
                 pendingWake.SnapshotFingerprint,
                 DateTimeOffset.UtcNow);
+            var acceptance = new WakeAcceptance("invocation-failed-transaction", newCheckpoint.AcceptedAtUtc);
 
             await Assert.ThrowsAsync<InjectedStoreFailure>(async () =>
                 await store.MarkAcceptedWithCheckpointAsync(
                     pendingWake.Id,
+                    acceptance,
                     newCheckpoint,
                     TestContext.Current.CancellationToken));
 
@@ -85,13 +87,15 @@ public sealed class AtomicAcceptanceTests
 
             var store = new SonnetBridgeStore(new TestContextFactory(options));
             await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            var acceptedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             await store.MarkAcceptedWithCheckpointAsync(
                 pendingWake.Id,
+                new WakeAcceptance("invocation-reopen", acceptedAt),
                 new CoreSnapshotCheckpoint(
                     pendingWake.BindingId,
                     pendingWake.SessionId,
                     pendingWake.SnapshotFingerprint,
-                    DateTimeOffset.UtcNow),
+                    acceptedAt),
                 TestContext.Current.CancellationToken);
 
             await using var reopenedContext = new BridgeDbContext(options);
@@ -108,6 +112,140 @@ public sealed class AtomicAcceptanceTests
             Assert.Single(migrations);
             Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
             Assert.Equal(pendingWake.SnapshotFingerprint, persistedCheckpoint.Fingerprint);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Acceptance_receipt_and_checkpoint_are_persisted_together()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"DrasiWake-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            var options = CreateOptions($"Data Source={databaseDirectory}");
+            var pendingWake = CreatePendingWake();
+            await using (var context = new BridgeDbContext(options))
+            {
+                await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            }
+
+            var store = new SonnetBridgeStore(new TestContextFactory(options));
+            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            var acceptance = new WakeAcceptance("invocation-42", DateTimeOffset.UtcNow);
+            var checkpoint = new CoreSnapshotCheckpoint(
+                pendingWake.BindingId,
+                pendingWake.SessionId,
+                pendingWake.SnapshotFingerprint,
+                acceptance.AcceptedAtUtc);
+
+            await store.MarkAcceptedWithCheckpointAsync(
+                pendingWake.Id,
+                acceptance,
+                checkpoint,
+                TestContext.Current.CancellationToken);
+
+            await using var verificationContext = new BridgeDbContext(options);
+            var persistedWake = await verificationContext.WakeOutbox.AsNoTracking()
+                .SingleAsync(item => item.Id == pendingWake.Id, TestContext.Current.CancellationToken);
+            var persistedCheckpoint = await verificationContext.SnapshotCheckpoints.AsNoTracking()
+                .SingleAsync(item => item.BindingId == pendingWake.BindingId && item.SessionId == pendingWake.SessionId,
+                    TestContext.Current.CancellationToken);
+
+            Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
+            Assert.Equal(acceptance.InvocationId, persistedWake.InvocationId);
+            Assert.Equal(checkpoint.Fingerprint, persistedCheckpoint.Fingerprint);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Execution_receipt_updates_outbox_without_changing_checkpoint()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"DrasiWake-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            var options = CreateOptions($"Data Source={databaseDirectory}");
+            var pendingWake = CreatePendingWake();
+            await using (var context = new BridgeDbContext(options))
+            {
+                await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            }
+
+            var store = new SonnetBridgeStore(new TestContextFactory(options));
+            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            var acceptedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            var checkpoint = new CoreSnapshotCheckpoint(
+                pendingWake.BindingId,
+                pendingWake.SessionId,
+                pendingWake.SnapshotFingerprint,
+                acceptedAt);
+            await store.MarkAcceptedWithCheckpointAsync(
+                pendingWake.Id,
+                new WakeAcceptance("invocation-execution", acceptedAt),
+                checkpoint,
+                TestContext.Current.CancellationToken);
+
+            await store.UpdateExecutionStatusAsync(
+                new WakeExecutionStatus("invocation-execution", "Completed", acceptedAt.AddSeconds(5)),
+                TestContext.Current.CancellationToken);
+
+            await using var verificationContext = new BridgeDbContext(options);
+            var persistedWake = await verificationContext.WakeOutbox.AsNoTracking()
+                .SingleAsync(item => item.Id == pendingWake.Id, TestContext.Current.CancellationToken);
+            var persistedCheckpoint = await verificationContext.SnapshotCheckpoints.AsNoTracking()
+                .SingleAsync(item => item.BindingId == pendingWake.BindingId && item.SessionId == pendingWake.SessionId,
+                    TestContext.Current.CancellationToken);
+
+            Assert.Equal(WakeOutboxStatus.Completed, persistedWake.Status);
+            Assert.Equal(checkpoint.Fingerprint, persistedCheckpoint.Fingerprint);
+            Assert.Equal(checkpoint.AcceptedAtUtc, persistedCheckpoint.AcceptedAtUtc);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Rejected_wake_is_persisted_as_dead_letter_once_with_reason_code()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"DrasiWake-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            var options = CreateOptions($"Data Source={databaseDirectory}");
+            await using (var context = new BridgeDbContext(options))
+            {
+                await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            }
+
+            var entity = CreatePendingWake();
+            var rejectedWake = ToDomain(entity) with { Status = WakeOutboxStatus.DeadLetter };
+            var store = new SonnetBridgeStore(new TestContextFactory(options));
+            await store.RecordRejectedWakeAsync(
+                rejectedWake,
+                "payload.schema_invalid",
+                TestContext.Current.CancellationToken);
+            await store.RecordRejectedWakeAsync(
+                rejectedWake,
+                "payload.schema_invalid",
+                TestContext.Current.CancellationToken);
+
+            await using var verificationContext = new BridgeDbContext(options);
+            var persisted = await verificationContext.WakeOutbox.AsNoTracking()
+                .SingleAsync(item => item.Id == rejectedWake.Id, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WakeOutboxStatus.DeadLetter, persisted.Status);
+            Assert.Equal("payload.schema_invalid", persisted.LastErrorCode);
+            Assert.Equal(rejectedWake.IdempotencyKey, persisted.IdempotencyKey);
         }
         finally
         {
@@ -209,7 +347,8 @@ public sealed class AtomicAcceptanceTests
                 pendingWake.SessionId,
                 pendingWake.SnapshotFingerprint,
                 DateTimeOffset.UtcNow);
-            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, checkpoint, TestContext.Current.CancellationToken);
+            var acceptance = new WakeAcceptance("invocation-repeat", checkpoint.AcceptedAtUtc);
+            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, acceptance, checkpoint, TestContext.Current.CancellationToken);
 
             await using (var completedContext = new BridgeDbContext(options))
             {
@@ -220,7 +359,7 @@ public sealed class AtomicAcceptanceTests
                 await completedContext.SaveChangesAsync(TestContext.Current.CancellationToken);
             }
 
-            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, checkpoint, TestContext.Current.CancellationToken);
+            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, acceptance, checkpoint, TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
             var status = await verificationContext.WakeOutbox.AsNoTracking()

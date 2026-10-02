@@ -13,7 +13,10 @@ public sealed class ContractRegistryTests
         var validCandidate = await loader.LoadCandidateAsync(Fixture("valid-default.yaml"), TestContext.Current.CancellationToken);
         Assert.Empty(validCandidate.Errors);
         Assert.NotNull(validCandidate.Registry);
-        Assert.Equal("per-query", Assert.Single(validCandidate.Registry.Bindings).SessionScope);
+        var binding = Assert.Single(validCandidate.Registry.Bindings);
+        Assert.Equal("per-query", binding.SessionScope);
+        Assert.True(Path.IsPathFullyQualified(binding.Contract.FactSchemaPath));
+        Assert.True(File.Exists(binding.Contract.FactSchemaPath));
         Assert.True(manager.TryActivate(validCandidate));
         var previous = manager.Active;
 
