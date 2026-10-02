@@ -1,0 +1,40 @@
+version: 1.0.0
+bindings:
+  - id: triage-orders
+    source: drasi-server
+    server: http://localhost:8080
+    queryId: order-changes
+    deliveryMode: converge-latest
+    sessionScope: per-query
+    aggregateKeyPointer: /orderId
+    metaSkill: triage-order
+    contractVersion: 1.0.0
+    factSchemaPath: order.schema.json
+    maxPayloadBytes: 32768
+    triggerPhrases:
+      - review item
+    retry:
+      maxAttempts: 5
+      maxAgeSeconds: 86400
+    rateLimit:
+      permitLimit: 10
+      windowMilliseconds: 1000
+  - id: triage-shipments
+    source: drasi-server
+    server: http://localhost:8080
+    queryId: shipment-changes
+    deliveryMode: converge-latest
+    sessionScope: per-query
+    aggregateKeyPointer: /shipmentId
+    metaSkill: triage-shipment
+    contractVersion: 1.0.0
+    factSchemaPath: order.schema.json
+    maxPayloadBytes: 32768
+    triggerPhrases:
+      - review item
+    retry:
+      maxAttempts: 5
+      maxAgeSeconds: 86400
+    rateLimit:
+      permitLimit: 10
+      windowMilliseconds: 1000

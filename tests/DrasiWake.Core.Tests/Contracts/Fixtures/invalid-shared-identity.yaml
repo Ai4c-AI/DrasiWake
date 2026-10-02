@@ -1,0 +1,19 @@
+bindings:
+  - id: shared-order-triage
+    source: drasi-server
+    server: http://localhost:8080
+    queryId: order-changes
+    deliveryMode: converge-latest
+    sessionScope: shared-canonical
+    aggregateKeyPointer: /orderId
+    metaSkill: triage-order
+    factSchemaPath: order.schema.json
+    maxPayloadBytes: 32768
+    triggerPhrases:
+      - order requires review
+    retry:
+      maxAttempts: 5
+      maxAgeSeconds: 86400
+    rateLimit:
+      permitLimit: 10
+      windowMilliseconds: 1000
