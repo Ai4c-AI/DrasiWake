@@ -179,6 +179,7 @@ public sealed class SessionPartitioner : IAsyncDisposable
             {
                 await WaitUntilDueAsync(item, cancellationToken);
                 await WaitForBindingPermitAsync(item, cancellationToken);
+                BridgeTelemetry.RecordQueueAge(item, timeProvider.GetUtcNow() - item.CreatedAtUtc);
                 await processAsync(item, cancellationToken);
             }
             finally

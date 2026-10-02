@@ -1,0 +1,110 @@
+using System.Globalization;
+using DrasiWake.Adapters.DrasiServer;
+using DrasiWake.Adapters.OpenClaw;
+using Microsoft.Extensions.Configuration;
+
+namespace DrasiWake.Host;
+
+public sealed record DrasiWakeHostSettings(
+    DrasiServerOptions Drasi,
+    OpenClawOptions OpenClaw,
+    string DatabasePath,
+    string RegistryPath,
+    int SignalCapacity,
+    int WorkerCount,
+    TimeSpan ReconciliationInterval,
+    TimeSpan ShutdownTimeout,
+    TimeSpan DispatchPollInterval)
+{
+    public static DrasiWakeHostSettings FromConfiguration(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        var drasiUri = ReadUri(configuration, "DrasiWake:Drasi:ServerUri");
+        var openClawUri = ReadUri(configuration, "DrasiWake:OpenClaw:BaseAddress");
+        var databasePath = ReadRequired(configuration, "DrasiWake:Database:Path");
+        var registryPath = ReadRequired(configuration, "DrasiWake:Registry:Path");
+        var signalCapacity = ReadInt(configuration, "DrasiWake:ChannelCapacity", 256);
+        var workerCount = ReadInt(configuration, "DrasiWake:WorkerCount", 4);
+        var idempotencyRetention = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:IdempotencyRetention", TimeSpan.FromDays(30));
+        var maximumRetryAge = ReadTimeSpan(configuration, "DrasiWake:Outbox:MaximumRetryAge", TimeSpan.FromDays(7));
+        var drasiOptions = new DrasiServerOptions(drasiUri)
+        {
+            SignalCapacity = signalCapacity,
+            InitialReconnectDelay = ReadTimeSpan(configuration, "DrasiWake:Drasi:InitialReconnectDelay", TimeSpan.FromSeconds(1)),
+            MaxReconnectDelay = ReadTimeSpan(configuration, "DrasiWake:Drasi:MaxReconnectDelay", TimeSpan.FromSeconds(30))
+        };
+        var openClawOptions = new OpenClawOptions
+        {
+            BaseAddress = openClawUri,
+            BearerToken = configuration["DrasiWake:OpenClaw:BearerToken"],
+            MaxRetryAttempts = ReadInt(configuration, "DrasiWake:OpenClaw:MaxRetryAttempts", 3),
+            RetryBaseDelay = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:RetryBaseDelay", TimeSpan.FromMilliseconds(200)),
+            MaxRetryDelay = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:MaxRetryDelay", TimeSpan.FromSeconds(5)),
+            GatewayIdempotencyRetention = idempotencyRetention,
+            MaximumOutboxRetryAge = maximumRetryAge
+        };
+
+        return new DrasiWakeHostSettings(
+            drasiOptions,
+            openClawOptions,
+            Path.GetFullPath(databasePath),
+            Path.GetFullPath(registryPath),
+            signalCapacity,
+            workerCount,
+            ReadTimeSpan(configuration, "DrasiWake:ReconciliationInterval", TimeSpan.FromMinutes(1)),
+            ReadTimeSpan(configuration, "DrasiWake:ShutdownTimeout", TimeSpan.FromSeconds(30)),
+            ReadTimeSpan(configuration, "DrasiWake:DispatchPollInterval", TimeSpan.FromMilliseconds(250)));
+    }
+
+    public void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(Drasi.ServerUri);
+        if (!Drasi.ServerUri.IsAbsoluteUri || Drasi.SignalCapacity < 1 ||
+            Drasi.InitialReconnectDelay <= TimeSpan.Zero || Drasi.MaxReconnectDelay < Drasi.InitialReconnectDelay)
+        {
+            throw new InvalidOperationException("Drasi Server configuration is invalid.");
+        }
+        OpenClaw.Validate();
+        ArgumentOutOfRangeException.ThrowIfLessThan(SignalCapacity, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(WorkerCount, 1);
+        ArgumentException.ThrowIfNullOrWhiteSpace(DatabasePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(RegistryPath);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ReconciliationInterval, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ShutdownTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(DispatchPollInterval, TimeSpan.Zero);
+    }
+
+    private static string ReadRequired(IConfiguration configuration, string key)
+        => configuration[key] is { Length: > 0 } value
+            ? value
+            : throw new InvalidOperationException($"Required configuration '{key}' is missing.");
+
+    private static Uri ReadUri(IConfiguration configuration, string key)
+    {
+        var value = ReadRequired(configuration, key);
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidOperationException($"Configuration '{key}' must be an absolute HTTP or HTTPS URI.");
+        }
+        return uri;
+    }
+
+    private static int ReadInt(IConfiguration configuration, string key, int defaultValue)
+    {
+        if (configuration[key] is not { } value)
+            return defaultValue;
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        throw new InvalidOperationException($"Configuration '{key}' must be an integer.");
+    }
+
+    private static TimeSpan ReadTimeSpan(IConfiguration configuration, string key, TimeSpan defaultValue)
+    {
+        if (configuration[key] is not { } value)
+            return defaultValue;
+        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        throw new InvalidOperationException($"Configuration '{key}' must be a valid time interval.");
+    }
+}

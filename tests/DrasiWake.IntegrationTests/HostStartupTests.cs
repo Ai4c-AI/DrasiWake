@@ -1,0 +1,127 @@
+using DrasiWake.Host;
+using DrasiWake.Core.Contracts;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace DrasiWake.IntegrationTests;
+
+public sealed class HostStartupTests
+{
+    [Fact]
+    public async Task Invalid_registry_fails_host_startup()
+    {
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml")
+        }));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => host.StartAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Gateway_retention_shorter_than_retry_age_fails_before_registry_load()
+    {
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml"),
+            ["DrasiWake:OpenClaw:IdempotencyRetention"] = "01:00:00",
+            ["DrasiWake:Outbox:MaximumRetryAge"] = "02:00:00"
+        }));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => host.StartAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("retention", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("DrasiWake:WorkerCount", "not-a-number")]
+    [InlineData("DrasiWake:DispatchPollInterval", "not-a-duration")]
+    public void Invalid_numeric_configuration_is_rejected(string key, string value)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+            {
+                [key] = value
+            })));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Valid_registry_migrates_database_and_database_directory_has_single_owner()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"DrasiWake-host-{Guid.NewGuid():N}");
+        var registryPath = Path.Combine(root, "contracts", "bindings.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(registryPath)!);
+        await File.WriteAllTextAsync(Path.Combine(root, "contracts", "facts.schema.json"),
+            "{\"type\":\"object\"}", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(registryPath, SampleRegistry, TestContext.Current.CancellationToken);
+        var candidate = await new ContractRegistryLoader().LoadCandidateAsync(registryPath, TestContext.Current.CancellationToken);
+        Assert.True(candidate.IsValid, string.Join("; ", candidate.Errors.Select(error => error.Message)));
+        var configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = registryPath,
+            ["DrasiWake:Database:Path"] = Path.Combine(root, "database")
+        });
+
+        var firstHost = DrasiWakeHostBuilder.CreateHost(configuration);
+        var secondHost = DrasiWakeHostBuilder.CreateHost(configuration);
+        var firstValidator = firstHost.Services.GetRequiredService<HostStartupValidator>();
+        var secondValidator = secondHost.Services.GetRequiredService<HostStartupValidator>();
+        try
+        {
+            await firstValidator.StartAsync(TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => secondValidator.StartAsync(TestContext.Current.CancellationToken));
+            await firstValidator.StopAsync(CancellationToken.None);
+            await secondValidator.StartAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            firstHost.Dispose();
+            secondHost.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static IConfiguration CreateConfiguration(IReadOnlyDictionary<string, string?> overrides)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
+            ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:8081",
+            ["DrasiWake:Database:Path"] = Path.Combine(Path.GetTempPath(), $"DrasiWake-test-{Guid.NewGuid():N}"),
+            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml"),
+            ["DrasiWake:OpenClaw:IdempotencyRetention"] = "30.00:00:00",
+            ["DrasiWake:Outbox:MaximumRetryAge"] = "7.00:00:00"
+        };
+        foreach (var entry in overrides)
+            values[entry.Key] = entry.Value;
+        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+    }
+
+    private static readonly string SampleRegistry = string.Join(Environment.NewLine,
+    [
+        "version: 1.0.0",
+        "bindings:",
+        "  - id: test-binding",
+        "    source: drasi-server",
+        "    server: http://127.0.0.1:8080",
+        "    instanceId: default",
+        "    queryId: orders",
+        "    deliveryMode: converge-latest",
+        "    sessionScope: singleton",
+        "    metaSkill: triage-order",
+        "    contractVersion: 1.0.0",
+        "    factSchemaPath: facts.schema.json",
+        "    maxPayloadBytes: 32768",
+        "    retry:",
+        "      maxAttempts: 3",
+        "      maxAgeSeconds: 86400",
+        "    rateLimit:",
+        "      permitLimit: 10",
+        "      windowMilliseconds: 1000"
+    ]);
+}

@@ -24,19 +24,36 @@ public sealed class SnapshotReconciler(
     public async Task ReconcileAsync(QueryIdentity query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
+        using var activity = BridgeTelemetry.StartReconciliation(query);
+        BridgeTelemetry.RecordReconciliation(query);
 
         var bindings = registry.Active.Bindings
             .Where(binding => Matches(binding, query))
             .ToArray();
         if (bindings.Length == 0)
+        {
+            BridgeTelemetry.RecordRoute(query, null, "unmatched");
             return;
+        }
+
+        foreach (var binding in bindings)
+            BridgeTelemetry.RecordRoute(query, binding.Id, "matched", binding.Contract.Version);
 
         var lockKey = GetQueryKey(query);
         var queryLock = QueryLocks.GetOrAdd(lockKey, static _ => new SemaphoreSlim(1, 1));
         await queryLock.WaitAsync(cancellationToken);
         try
         {
-            var snapshot = await changeSource.ReadSnapshotAsync(query, cancellationToken);
+            QuerySnapshot snapshot;
+            try
+            {
+                snapshot = await changeSource.ReadSnapshotAsync(query, cancellationToken);
+            }
+            catch
+            {
+                BridgeTelemetry.RecordSnapshotFailure(query);
+                throw;
+            }
             var recoveryState = await store.LoadRecoveryStateAsync(cancellationToken);
             var rows = SnapshotFingerprint.CanonicalizeRows(snapshot.Rows);
 
@@ -114,13 +131,17 @@ public sealed class SnapshotReconciler(
                     var checkpoint = recoveryState.Checkpoints.FirstOrDefault(item =>
                         item.BindingId == binding.Id && item.SessionId == sessionId);
                     if (checkpoint?.Fingerprint == fingerprint)
+                    {
+                        BridgeTelemetry.RecordDuplicateFingerprint(binding.Id);
                         continue;
+                    }
 
                     if (recoveryState.DispatchableItems.Any(item =>
                             item.BindingId == binding.Id && item.SessionId == sessionId &&
                             item.SnapshotFingerprint == fingerprint &&
                             item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled))
                     {
+                        BridgeTelemetry.RecordDuplicateFingerprint(binding.Id);
                         continue;
                     }
 
@@ -141,6 +162,7 @@ public sealed class SnapshotReconciler(
                         null,
                         null);
                     _ = await store.CreateOrUpdatePendingWakeAsync(item, cancellationToken);
+                    BridgeTelemetry.RecordOutboxCreated(item);
                 }
             }
         }

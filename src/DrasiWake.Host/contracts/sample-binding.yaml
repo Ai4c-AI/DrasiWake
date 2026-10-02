@@ -1,0 +1,20 @@
+version: 1.0.0
+bindings:
+  - id: sample-orders
+    source: drasi-server
+    server: http://127.0.0.1:8080
+    instanceId: default
+    queryId: orders
+    deliveryMode: converge-latest
+    sessionScope: singleton
+    metaSkill: triage-order
+    contractVersion: 1.0.0
+    factSchemaPath: sample-facts.schema.json
+    maxPayloadBytes: 32768
+    triggerPhrases: []
+    retry:
+      maxAttempts: 5
+      maxAgeSeconds: 86400
+    rateLimit:
+      permitLimit: 10
+      windowMilliseconds: 1000

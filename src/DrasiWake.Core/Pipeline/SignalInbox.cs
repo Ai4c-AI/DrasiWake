@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Runtime.CompilerServices;
 using DrasiWake.Core.Domain;
 
 namespace DrasiWake.Core.Pipeline;
@@ -8,6 +9,7 @@ public sealed class SignalInbox
     private readonly Channel<ChangeSignal> channel;
     private readonly object dirtyLock = new();
     private readonly HashSet<QueryIdentity> dirtyQueries = [];
+    private int queueDepth;
 
     public SignalInbox(int capacity)
     {
@@ -23,18 +25,40 @@ public sealed class SignalInbox
     public bool TryWrite(ChangeSignal signal)
     {
         ArgumentNullException.ThrowIfNull(signal);
+        Interlocked.Increment(ref queueDepth);
         if (channel.Writer.TryWrite(signal))
+        {
+            BridgeTelemetry.RecordSignalQueued(signal.Query);
             return true;
+        }
+
+        Interlocked.Decrement(ref queueDepth);
 
         lock (dirtyLock)
             dirtyQueries.Add(signal.Query);
+        BridgeTelemetry.RecordSignalOverflow(signal.Query);
         return false;
     }
 
-    public bool TryRead(out ChangeSignal? signal) => channel.Reader.TryRead(out signal);
+    public bool TryRead(out ChangeSignal? signal)
+    {
+        if (!channel.Reader.TryRead(out signal))
+            return false;
+        Interlocked.Decrement(ref queueDepth);
+        BridgeTelemetry.RecordSignalDequeued(signal!.Query);
+        return true;
+    }
 
-    public IAsyncEnumerable<ChangeSignal> ReadAllAsync(CancellationToken cancellationToken = default)
-        => channel.Reader.ReadAllAsync(cancellationToken);
+    public async IAsyncEnumerable<ChangeSignal> ReadAllAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var signal in channel.Reader.ReadAllAsync(cancellationToken))
+        {
+            Interlocked.Decrement(ref queueDepth);
+            BridgeTelemetry.RecordSignalDequeued(signal.Query);
+            yield return signal;
+        }
+    }
 
     public async Task ReceiveAsync(
         IAsyncEnumerable<ChangeSignal> signals,
