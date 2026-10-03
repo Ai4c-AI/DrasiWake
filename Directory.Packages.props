@@ -3,6 +3,8 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
   <ItemGroup>
+    <PackageVersion Include="Aspire.Hosting" Version="13.6.0" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.0" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="JsonSchema.Net" Version="9.4.0" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />

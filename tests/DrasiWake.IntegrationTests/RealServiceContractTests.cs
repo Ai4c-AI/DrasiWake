@@ -3,19 +3,44 @@ using System.Net.Http.Headers;
 using DrasiWake.Adapters.DrasiServer;
 using DrasiWake.Adapters.OpenClaw;
 using DrasiWake.Core.Domain;
+using DrasiWake.LocalEnvironment;
 using System.Text.Json.Nodes;
 
 namespace DrasiWake.IntegrationTests;
 
+[Collection(AspireContractCollection.Name)]
+public sealed class RealAspireSmokeTests
+{
+    private readonly AspireContractFixture _aspire;
+
+    public RealAspireSmokeTests(AspireContractFixture aspire) => _aspire = aspire;
+
+    [Fact]
+    public void Compose_services_are_started_and_have_discovered_addresses()
+    {
+        if (Environment.GetEnvironmentVariable("DRASIWAKE_RUN_REAL_ASPIRE_SMOKE") != "1")
+            Assert.Skip("Set DRASIWAKE_RUN_REAL_ASPIRE_SMOKE=1 and provide AppHost secrets to start the Aspire-managed Compose services.");
+
+        Assert.NotNull(_aspire.State?.DrasiServerUri);
+        Assert.NotNull(_aspire.State?.OpenClawBaseAddress);
+    }
+}
+
+[Collection(AspireContractCollection.Name)]
 public sealed class RealDrasiContractTests
 {
+    private readonly AspireContractFixture _aspire;
+
+    public RealDrasiContractTests(AspireContractFixture aspire) => _aspire = aspire;
+
     [Fact]
     public async Task Configured_Drasi_supports_enumeration_results_and_attach_routes()
     {
         if (Environment.GetEnvironmentVariable("DRASIWAKE_RUN_REAL_DRASI_CONTRACT_TESTS") != "1")
-            Assert.Skip("Set DRASIWAKE_RUN_REAL_DRASI_CONTRACT_TESTS=1 and the DRASIWAKE_REAL_DRASI_* variables to run this external contract test.");
+            Assert.Skip("Set DRASIWAKE_RUN_REAL_DRASI_CONTRACT_TESTS=1, the Drasi instance/query identifiers, and AppHost secrets to run this test through Aspire.");
 
-        var serverUri = new Uri(Required("DRASIWAKE_REAL_DRASI_URL"));
+        var serverUri = _aspire.State?.DrasiServerUri
+            ?? throw new InvalidOperationException("Drasi Compose did not publish an endpoint through Aspire.");
         var instanceId = Required("DRASIWAKE_REAL_DRASI_INSTANCE_ID");
         var queryId = Required("DRASIWAKE_REAL_DRASI_QUERY_ID");
         var query = new QueryIdentity(serverUri, instanceId, queryId);
@@ -58,20 +83,31 @@ public sealed class RealDrasiContractTests
     }
 }
 
+[Collection(AspireContractCollection.Name)]
 public sealed class RealGatewayContractTests
 {
+    private readonly AspireContractFixture _aspire;
+
+    public RealGatewayContractTests(AspireContractFixture aspire) => _aspire = aspire;
+
     [Fact]
     public async Task Configured_Gateway_replays_same_key_and_retention_covers_retry_age()
     {
         if (Environment.GetEnvironmentVariable("DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS") != "1")
-            Assert.Skip("Set DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS=1 and the DRASIWAKE_REAL_GATEWAY_* variables to run this side-effecting contract test.");
+            Assert.Skip("Set DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS=1, DRASIWAKE_REAL_GATEWAY_TEST_SKILL, and AppHost secrets to run this test through Aspire.");
 
-        var baseAddress = new Uri(Required("DRASIWAKE_REAL_GATEWAY_URL"));
-        var token = Required("DRASIWAKE_REAL_GATEWAY_TOKEN");
+        var baseAddress = _aspire.State?.OpenClawBaseAddress
+            ?? throw new InvalidOperationException("OpenClaw Compose did not publish an endpoint through Aspire.");
+        var token = _aspire.Options?.AuthToken
+            ?? throw new InvalidOperationException("OpenClaw AppHost secrets were not loaded.");
         var skill = Required("DRASIWAKE_REAL_GATEWAY_TEST_SKILL");
-        var gatewayBuild = Required("DRASIWAKE_REAL_GATEWAY_BUILD");
-        var retention = TimeSpan.Parse(Required("DRASIWAKE_REAL_GATEWAY_IDEMPOTENCY_RETENTION"), System.Globalization.CultureInfo.InvariantCulture);
-        var maximumRetryAge = TimeSpan.Parse(Required("DRASIWAKE_REAL_MAX_OUTBOX_RETRY_AGE"), System.Globalization.CultureInfo.InvariantCulture);
+        var gatewayBuild = Environment.GetEnvironmentVariable("DRASIWAKE_REAL_GATEWAY_BUILD") ?? "openclaw.net:local";
+        var retention = TimeSpan.Parse(
+            Environment.GetEnvironmentVariable("DRASIWAKE_REAL_GATEWAY_IDEMPOTENCY_RETENTION") ?? "30.00:00:00",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var maximumRetryAge = TimeSpan.Parse(
+            Environment.GetEnvironmentVariable("DRASIWAKE_REAL_MAX_OUTBOX_RETRY_AGE") ?? "7.00:00:00",
+            System.Globalization.CultureInfo.InvariantCulture);
         var options = new OpenClawOptions
         {
             BaseAddress = baseAddress,

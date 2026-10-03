@@ -20,6 +20,23 @@ public sealed class HostStartupTests
     }
 
     [Fact]
+    public void Aspire_environment_keys_bind_existing_host_endpoints_and_token()
+    {
+        var configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:45123/",
+            ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:45678/",
+            ["DrasiWake:OpenClaw:BearerToken"] = "gateway-test-token"
+        });
+
+        var settings = DrasiWakeHostSettings.FromConfiguration(configuration);
+
+        Assert.Equal(new Uri("http://127.0.0.1:45123/"), settings.Drasi.ServerUri);
+        Assert.Equal(new Uri("http://127.0.0.1:45678/"), settings.OpenClaw.BaseAddress);
+        Assert.Equal("gateway-test-token", settings.OpenClaw.BearerToken);
+    }
+
+    [Fact]
     public async Task Gateway_retention_shorter_than_retry_age_fails_before_registry_load()
     {
         using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
