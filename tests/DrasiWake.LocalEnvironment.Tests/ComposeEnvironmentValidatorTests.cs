@@ -38,6 +38,27 @@ public sealed class ComposeEnvironmentValidatorTests
     }
 
     [Fact]
+    public void Uses_repository_compose_copies_and_preserves_sibling_project_directories()
+    {
+        using var fixture = new EnvironmentFixture();
+        var options = new ComposeEnvironmentOptions(
+            fixture.Root,
+            fixture.OpenClawPath,
+            fixture.OpenClawPath,
+            "provider-key",
+            "gateway-token");
+        var stacks = ComposeStackDefinition.Create(
+            options,
+            new ComposeStackResource("drasi-compose"),
+            new ComposeStackResource("openclaw-compose"));
+
+        Assert.Equal(options.DrasiComposeFilePath, stacks[0].ComposeFilePath);
+        Assert.Equal(options.DrasiRepositoryPath, stacks[0].RepositoryPath);
+        Assert.Equal(options.OpenClawComposeFilePath, stacks[1].ComposeFilePath);
+        Assert.Equal(options.OpenClawRepositoryPath, stacks[1].RepositoryPath);
+    }
+
+    [Fact]
     public void Maps_llm_environment_variables_to_openclaw_compose_without_passing_them_to_drasi()
     {
         using var fixture = new EnvironmentFixture();
@@ -58,7 +79,8 @@ public sealed class ComposeEnvironmentValidatorTests
         Assert.Equal("test-api-key", stacks[1].Environment["MODEL_PROVIDER_KEY"]);
         Assert.Equal("https://api.minimax.cn/v1", stacks[1].Environment["MODEL_PROVIDER_ENDPOINT"]);
         Assert.Equal("test-model", stacks[1].Environment["OPENCLAW_MODEL"]);
-        Assert.Empty(stacks[0].Environment);
+        Assert.Single(stacks[0].Environment);
+        Assert.Equal(options.DrasiFixtureConfigPath, stacks[0].Environment["DRASIWAKE_FIXTURE_CONFIG_PATH"]);
         Assert.Contains("LLM_API_KEY", stacks[0].RemovedEnvironmentVariables);
         Assert.Contains("LLM_BASE_URL", stacks[0].RemovedEnvironmentVariables);
         Assert.Contains("LLM_MODEL_NAME", stacks[0].RemovedEnvironmentVariables);
@@ -148,12 +170,41 @@ public sealed class ComposeEnvironmentValidatorTests
         Assert.Empty(new ComposeEnvironmentValidator(absolute).Validate());
     }
 
+    [Fact]
+    public void Validates_repository_local_fixture_files()
+    {
+        using var fixture = new EnvironmentFixture();
+        var options = new ComposeEnvironmentOptions(
+            fixture.Root,
+            fixture.OpenClawPath,
+            fixture.OpenClawPath,
+            "provider-key",
+            "gateway-token");
+        File.Delete(options.DrasiServerConfigPath);
+
+        var errors = new ComposeEnvironmentValidator(options).Validate();
+
+        Assert.Contains(errors, error => error.Contains("Drasi server config", StringComparison.Ordinal));
+    }
+
     private static IConfiguration CreateConfiguration(IReadOnlyDictionary<string, string?> values) =>
         new ConfigurationBuilder().AddInMemoryCollection(values).Build();
 
     private sealed class EnvironmentFixture : IDisposable
     {
         private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("drasiwake-local-env-");
+
+        public EnvironmentFixture()
+        {
+            var options = new ComposeEnvironmentOptions(Root, Root, Root, "", "");
+            Directory.CreateDirectory(options.DrasiFixtureConfigPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(options.OpenClawMetaSkillPath)!);
+            File.WriteAllText(options.DrasiComposeFilePath, "services: {}\n");
+            File.WriteAllText(options.DrasiComposeOverridePath, "services: {}\n");
+            File.WriteAllText(options.DrasiServerConfigPath, "apiVersion: drasi.io/v1\n");
+            File.WriteAllText(options.OpenClawComposeFilePath, "services: {}\n");
+            File.WriteAllText(options.OpenClawMetaSkillPath, "---\nname: test\nkind: meta\n---\n");
+        }
 
         public string Root => _directory.FullName;
 

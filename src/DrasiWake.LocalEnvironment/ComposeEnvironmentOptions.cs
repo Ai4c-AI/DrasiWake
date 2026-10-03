@@ -13,7 +13,7 @@ public sealed class ComposeEnvironmentOptions
         string modelProviderEndpoint = "",
         string modelName = "")
     {
-        RepositoryRoot = repositoryRoot;
+        RepositoryRoot = Path.GetFullPath(repositoryRoot);
         DrasiRepositoryPath = drasiRepositoryPath;
         OpenClawRepositoryPath = openClawRepositoryPath;
         ModelProviderKey = modelProviderKey;
@@ -23,6 +23,24 @@ public sealed class ComposeEnvironmentOptions
     }
 
     public string RepositoryRoot { get; }
+
+    public string DrasiFixtureConfigPath => Path.Combine(RepositoryRoot, "dev", "fixtures", "drasi", "config");
+
+    public string DrasiServerConfigPath => Path.Combine(DrasiFixtureConfigPath, "server.yaml");
+
+    public string DrasiComposeFilePath => Path.Combine(RepositoryRoot, "dev", "fixtures", "drasi", "docker-compose.yml");
+
+    public string DrasiComposeOverridePath => Path.Combine(RepositoryRoot, "dev", "fixtures", "drasi", "compose.override.yml");
+
+    public string OpenClawComposeFilePath => Path.Combine(RepositoryRoot, "dev", "fixtures", "openclaw", "docker-compose.yml");
+
+    public string OpenClawWorkspacePath => Path.Combine(RepositoryRoot, "dev", "fixtures", "openclaw", "workspace");
+
+    public string OpenClawMetaSkillPath => Path.Combine(
+        OpenClawWorkspacePath,
+        "skills",
+        "drasiwake-sensor-reading-summary",
+        "SKILL.md");
 
     public string DrasiRepositoryPath { get; }
 

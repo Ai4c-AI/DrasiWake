@@ -3,7 +3,7 @@
 
 ## Aspire 本地开发环境
 
-在本仓库同级放置 `drasi-server` 与 `openclaw.net` 后，可用 Aspire 一次启动两组 Compose 依赖和 DrasiWake Host。配置密钥、路径覆盖、冲突处理与清理语义见 [Aspire 本地环境指南](docs/development/aspire-local-environment.md)。
+在本仓库同级放置 `drasi-server` 与 `openclaw.net` 后，可用 Aspire 一次启动两组 Compose 依赖和 DrasiWake Host。真实服务测试用的 Drasi 配置与 OpenClaw MetaSkill 均位于本仓库 `dev/fixtures`。配置密钥、路径覆盖、冲突处理与清理语义见 [Aspire 本地环境指南](docs/development/aspire-local-environment.md)。
 
 ```powershell
 dotnet run --project src/DrasiWake.AppHost/DrasiWake.AppHost.csproj

@@ -26,10 +26,12 @@ public sealed class ComposeEnvironmentCoordinatorTests
         var openClaw = stacks[1];
         var upCommands = executor.Commands.Where(IsComposeUp).ToArray();
         Assert.Equal(2, upCommands.Length);
+        Assert.All(upCommands, command => Assert.Equal(TimeSpan.FromMinutes(15), command.Timeout));
         Assert.DoesNotContain(upCommands[0].Arguments, argument =>
             argument.Contains("provider-secret", StringComparison.Ordinal) ||
             argument.Contains("gateway-secret", StringComparison.Ordinal));
-        Assert.Empty(drasi.Environment);
+        Assert.Single(drasi.Environment);
+        Assert.Contains("DRASIWAKE_FIXTURE_CONFIG_PATH", drasi.Environment.Keys);
         Assert.Contains("MODEL_PROVIDER_KEY", drasi.RemovedEnvironmentVariables);
         Assert.Contains(
             "DrasiWake__DevEnvironment__OpenClaw__AuthToken",
@@ -41,6 +43,7 @@ public sealed class ComposeEnvironmentCoordinatorTests
 
         var downCommands = executor.Commands.Where(IsComposeDown).ToArray();
         Assert.Equal([openClaw.ProjectName, drasi.ProjectName], downCommands.Select(GetProjectName));
+        Assert.All(downCommands, command => Assert.Equal(TimeSpan.FromMinutes(4), command.Timeout));
         Assert.All(downCommands, command =>
         {
             Assert.DoesNotContain("--volumes", command.Arguments);
@@ -48,6 +51,35 @@ public sealed class ComposeEnvironmentCoordinatorTests
         });
         Assert.Null(state.DrasiServerUri);
         Assert.Equal(2, notifier.StoppedResources.Count);
+    }
+
+    [Fact]
+    public async Task Uses_repository_local_drasi_config_and_openclaw_workspace_fixtures()
+    {
+        using var fixture = new CoordinatorFixture();
+        var executor = new RecordingCommandExecutor();
+        var stacks = fixture.CreateStacks();
+        var coordinator = fixture.CreateCoordinator(
+            stacks,
+            executor,
+            new RecordingResourceNotifier(),
+            new ComposeEnvironmentState());
+
+        await coordinator.StartAsync(TestContext.Current.CancellationToken);
+
+        var drasiUp = executor.Commands.Single(command =>
+            IsComposeUp(command) && GetProjectName(command) == stacks[0].ProjectName);
+        var openClawUp = executor.Commands.Single(command =>
+            IsComposeUp(command) && GetProjectName(command) == stacks[1].ProjectName);
+
+        Assert.Contains(
+            Path.Combine(fixture.Root, "dev", "fixtures", "drasi", "compose.override.yml"),
+            drasiUp.Arguments);
+        Assert.Equal(
+            Path.Combine(fixture.Root, "dev", "fixtures", "openclaw", "workspace"),
+            openClawUp.Environment["OPENCLAW_WORKSPACE"]);
+
+        await coordinator.StopAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -71,6 +103,25 @@ public sealed class ComposeEnvironmentCoordinatorTests
     }
 
     [Fact]
+    public async Task Preflight_conflict_does_not_mark_unstarted_resources_stopped()
+    {
+        using var fixture = new CoordinatorFixture();
+        var executor = new RecordingCommandExecutor(conflictingContainer: "openclaw-gateway");
+        var notifier = new RecordingResourceNotifier();
+        var coordinator = fixture.CreateCoordinator(
+            fixture.CreateStacks(),
+            executor,
+            notifier,
+            new ComposeEnvironmentState());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.StartAsync(TestContext.Current.CancellationToken));
+        await coordinator.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(notifier.StoppedResources);
+    }
+
+    [Fact]
     public async Task Failed_start_rolls_back_only_the_stack_created_by_this_attempt()
     {
         using var fixture = new CoordinatorFixture();
@@ -82,9 +133,12 @@ public sealed class ComposeEnvironmentCoordinatorTests
             new RecordingResourceNotifier(),
             new ComposeEnvironmentState());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             coordinator.StartAsync(TestContext.Current.CancellationToken));
 
+        Assert.Contains("compose-up-diagnostic", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("provider-secret", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("gateway-secret", exception.Message, StringComparison.Ordinal);
         var downCommands = executor.Commands.Where(IsComposeDown).ToArray();
         Assert.Single(downCommands);
         Assert.Equal(stacks[0].ProjectName, GetProjectName(downCommands[0]));
@@ -176,10 +230,20 @@ public sealed class ComposeEnvironmentCoordinatorTests
         private readonly string _drasiPath;
         private readonly string _openClawPath;
 
+        public string Root => _root.FullName;
+
         public CoordinatorFixture()
         {
             _drasiPath = CreateRepository("drasi", "${DRASI_API_PORT:-0}:8080");
             _openClawPath = CreateRepository("openclaw", "0:18789");
+            var options = new ComposeEnvironmentOptions(Root, _drasiPath, _openClawPath, "", "");
+            Directory.CreateDirectory(options.DrasiFixtureConfigPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(options.OpenClawMetaSkillPath)!);
+            File.WriteAllText(options.DrasiComposeOverridePath, "services: {}\n");
+            File.WriteAllText(options.DrasiComposeFilePath, "services:\n  drasi:\n    ports:\n      - '${DRASI_API_PORT:-0}:8080'\n");
+            File.WriteAllText(options.OpenClawComposeFilePath, "services:\n  openclaw:\n    ports:\n      - '0:18789'\n");
+            File.WriteAllText(options.DrasiServerConfigPath, "apiVersion: drasi.io/v1\n");
+            File.WriteAllText(options.OpenClawMetaSkillPath, "---\nname: test\nkind: meta\n---\n");
         }
 
         public IReadOnlyList<ComposeStackDefinition> CreateStacks() => ComposeStackDefinition.Create(
@@ -188,7 +252,7 @@ public sealed class ComposeEnvironmentCoordinatorTests
             new ComposeStackResource("openclaw-compose"));
 
         public void SetDrasiHostPort(int port) => File.WriteAllText(
-            Path.Combine(_drasiPath, "docker-compose.yml"),
+            new ComposeEnvironmentOptions(Root, _drasiPath, _openClawPath, "", "").DrasiComposeFilePath,
             $"services:\n  drasi:\n    ports:\n      - '{port}:8080'\n");
 
         public ComposeEnvironmentCoordinator CreateCoordinator(
@@ -297,7 +361,10 @@ public sealed class ComposeEnvironmentCoordinatorTests
 
                 if (failFirstStart && startNumber == 1)
                 {
-                    return new ComposeCommandResult(1, "provider-secret gateway-secret", "failed");
+                    return new ComposeCommandResult(
+                        1,
+                        string.Empty,
+                        new string('x', 600) + " compose-up-diagnostic provider-secret gateway-secret");
                 }
 
                 return new ComposeCommandResult(0, "healthy", string.Empty);

@@ -2,7 +2,7 @@
 
 - 日期：2026-10-03
 - 状态：设计已获用户批准；文档复核待完成
-- 范围：使用 .NET Aspire 编排本地 DrasiWake Host、Drasi Server 和 OpenClaw Gateway 开发/测试环境
+- 范围：使用 .NET Aspire 编排本地 DrasiWake Host、Drasi Server 和 OpenClaw Gateway 开发/测试环境，并提供一套可复现的真实服务测试 fixture
 
 ## 1. 背景与目标
 
@@ -33,7 +33,7 @@ DrasiWake Bridge Core V1 是独立运行的 .NET Generic Host。开发和集成�
 
 - 不改变生产部署形态或 Bridge Core 运行语义。
 - 不复制或重新定义 Drasi/OpenClaw Compose 服务。
-- 不修改外部 Drasi Server 或 OpenClaw 仓库。
+- 不修改外部 Drasi Server 或 OpenClaw Compose 文件及服务代码；fixture 配置与 MetaSkill 全部由 DrasiWake 仓库管理，通过 Compose override 和 workspace 路径覆盖注入。
 - 不读取、复制、生成或提交 Drasi 仓库中的 `.env`。
 - 不在初版启动 OpenClaw 的 `with-tls` Caddy profile。
 - 不承诺 Docker 发布端口仅绑定本机回环地址；当前 Compose 端口绑定风险作为已知限制记录。
@@ -169,3 +169,34 @@ Compose 文件包含固定容器名及固定或可配置的宿主机端口，因
 - 启停钩子在正常退出和启动中断时都能运行清理；异常中断后遗留的资源在下次启动时触发冲突诊断，不被误判为 AppHost 当前创建的资源。
 
 本设计不指定具体 Aspire API 类型或包版本；这些选择应在实现计划前通过当前 SDK/包能力验证，并保持本规格的可观察行为和所有权约束。
+
+## 9. 真实服务契约 Fixture
+
+真实服务测试复用 Aspire AppHost 生命周期，并使用 Drasi Server examples 中的 mock `sensorReading` 数据形状。fixture 不依赖 PostgreSQL CDC、外部 webhook 或手工写入数据。
+
+### 9.1 Drasi instance 与 query
+
+在 `drasi-server/config/server.yaml` 配置一个单实例：
+
+| 项目 | 标识/行为 |
+| --- | --- |
+| Drasi instance ID | `drasiwake-sensor-monitor` |
+| Mock source ID | `sensor-mock`，`dataType.type: sensorReading`，自动启动 |
+| Query ID | `sensor-readings`，自动启动 |
+| Query 输出 | `SensorId`、`Temperature`、`Humidity`，字段沿用 `examples/configs/01-fundamentals/hello-world.yaml` |
+
+配置文件位于 `dev/fixtures/drasi/config/server.yaml`。Drasi Compose override 位于 `dev/fixtures/drasi/compose.override.yml`，将该配置目录只读挂载到 `/app/config`；原 Drasi Compose 文件保持不变。Drasi query contract test 默认使用上述 instance/query ID，也允许 `DRASIWAKE_REAL_DRASI_INSTANCE_ID` 和 `DRASIWAKE_REAL_DRASI_QUERY_ID` 覆盖。
+
+### 9.2 OpenClaw MetaSkill
+
+在 `dev/fixtures/openclaw/workspace/skills/drasiwake-sensor-reading-summary/SKILL.md` 增加 `drasiwake-sensor-reading-summary` MetaSkill。Aspire 通过 `OPENCLAW_WORKSPACE` 令 OpenClaw Compose 使用此 workspace。它接收 query 事件 JSON，以一个 `llm_chat` composition step 生成简短摘要；仅陈述输入中有依据的传感器 ID、温度和湿度，不引入未配置的阈值或处置动作。该 skill 不调用外部工具、不写入数据。
+
+Gateway contract test 默认指定该 skill，并发送固定的传感器事件作为输入；仍允许 `DRASIWAKE_REAL_GATEWAY_TEST_SKILL` 覆盖。测试继续以并发重复请求验证同一幂等键只对应同一个 invocation ID。该 opt-in Gateway 测试最多触发一次模型生成，可能产生模型服务费用。
+
+### 9.3 Aspire smoke 与凭据
+
+`DRASIWAKE_RUN_REAL_ASPIRE_SMOKE=1` 单独启用真实启动 smoke：启动共享 Aspire fixture，确认 Drasi 和 OpenClaw 均通过 Compose 健康门控并发现宿主机地址，然后通过 Aspire 生命周期清理本次栈。该 smoke 不调用模型。
+
+模型配置优先级为显式 `DrasiWake:DevEnvironment:OpenClaw:*`、`MODEL_PROVIDER_KEY` / `MODEL_PROVIDER_ENDPOINT` / `MODEL_PROVIDER_MODEL`、兼容 fallback `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_NAME`。模型 provider key 与 Gateway `AuthToken` 是不同用途的凭据；真实启动必须分别提供。smoke 可使用仅限测试进程的临时 Gateway token，不持久化或写入仓库。
+
+仅在显式 opt-in 时启动真实 Compose。未设置 smoke 或契约测试运行开关时，测试必须跳过且不启动 Docker。外部 Compose 定义保持不变；所有 Drasi 配置、Compose override 和 OpenClaw workspace skill 都位于 DrasiWake 仓库的 `dev/fixtures` 下。

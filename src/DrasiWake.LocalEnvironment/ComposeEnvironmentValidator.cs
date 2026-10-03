@@ -15,6 +15,11 @@ public sealed class ComposeEnvironmentValidator(ComposeEnvironmentOptions option
             options.OpenClawRepositoryPath,
             "DrasiWake:DevEnvironment:OpenClawRepositoryPath",
             errors);
+        ValidateFixtureFile(options.DrasiComposeFilePath, "Drasi Docker Compose", errors);
+        ValidateFixtureFile(options.DrasiComposeOverridePath, "DrasiWake Drasi Compose override", errors);
+        ValidateFixtureFile(options.DrasiServerConfigPath, "DrasiWake Drasi server config", errors);
+        ValidateFixtureFile(options.OpenClawComposeFilePath, "OpenClaw Docker Compose", errors);
+        ValidateFixtureFile(options.OpenClawMetaSkillPath, "DrasiWake OpenClaw MetaSkill", errors);
 
         if (string.IsNullOrWhiteSpace(options.ModelProviderKey))
         {
@@ -37,9 +42,13 @@ public sealed class ComposeEnvironmentValidator(ComposeEnvironmentOptions option
             return;
         }
 
-        if (!File.Exists(Path.Combine(path, "docker-compose.yml")))
+    }
+
+    private static void ValidateFixtureFile(string path, string description, ICollection<string> errors)
+    {
+        if (!File.Exists(path))
         {
-            errors.Add($"Compose file docker-compose.yml is missing from repository configured by {settingName}: {path}.");
+            errors.Add($"Required local fixture file for {description} is missing: {path}.");
         }
     }
 }

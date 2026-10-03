@@ -11,7 +11,9 @@ public sealed class ComposeStackDefinition
         IReadOnlyList<string> containerNames,
         IReadOnlyDictionary<string, string> environment,
         IReadOnlyList<string> secretValues,
-        IReadOnlyList<string> removedEnvironmentVariables)
+        IReadOnlyList<string> removedEnvironmentVariables,
+        string? composeOverrideFilePath = null,
+        string? composeFilePath = null)
     {
         Resource = resource ?? throw new ArgumentNullException(nameof(resource));
         ArgumentException.ThrowIfNullOrWhiteSpace(repositoryPath);
@@ -31,13 +33,17 @@ public sealed class ComposeStackDefinition
         Environment = new Dictionary<string, string>(environment, StringComparer.OrdinalIgnoreCase);
         SecretValues = secretValues.ToArray();
         RemovedEnvironmentVariables = removedEnvironmentVariables.ToArray();
+        ComposeOverrideFilePath = composeOverrideFilePath;
+        ComposeFilePath = Path.GetFullPath(composeFilePath ?? Path.Combine(RepositoryPath, "docker-compose.yml"));
     }
 
     public ComposeStackResource Resource { get; }
 
     public string RepositoryPath { get; }
 
-    public string ComposeFilePath => Path.Combine(RepositoryPath, "docker-compose.yml");
+    public string ComposeFilePath { get; }
+
+    public string? ComposeOverrideFilePath { get; }
 
     public string ProjectName { get; }
 
@@ -63,7 +69,12 @@ public sealed class ComposeStackDefinition
         var openClawEnvironment = new Dictionary<string, string>
         {
             ["MODEL_PROVIDER_KEY"] = options.ModelProviderKey,
-            ["OPENCLAW_AUTH_TOKEN"] = options.AuthToken
+            ["OPENCLAW_AUTH_TOKEN"] = options.AuthToken,
+            ["OPENCLAW_WORKSPACE"] = options.OpenClawWorkspacePath
+        };
+        var drasiEnvironment = new Dictionary<string, string>
+        {
+            ["DRASIWAKE_FIXTURE_CONFIG_PATH"] = options.DrasiFixtureConfigPath
         };
         if (!string.IsNullOrWhiteSpace(options.ModelProviderEndpoint))
         {
@@ -83,7 +94,7 @@ public sealed class ComposeStackDefinition
                 "drasi-server",
                 8080,
                 ["drasi-server", "drasi-postgres"],
-                new Dictionary<string, string>(),
+                drasiEnvironment,
                 [options.ModelProviderKey, options.AuthToken],
                 [
                     "MODEL_PROVIDER_KEY",
@@ -97,8 +108,11 @@ public sealed class ComposeStackDefinition
                     "DrasiWake__DevEnvironment__OpenClaw__ModelProviderKey",
                     "DrasiWake__DevEnvironment__OpenClaw__ModelProviderEndpoint",
                     "DrasiWake__DevEnvironment__OpenClaw__ModelName",
-                    "DrasiWake__DevEnvironment__OpenClaw__AuthToken"
-                ]),
+                    "DrasiWake__DevEnvironment__OpenClaw__AuthToken",
+                    "OPENCLAW_WORKSPACE"
+                ],
+                options.DrasiComposeOverridePath,
+                options.DrasiComposeFilePath),
             new ComposeStackDefinition(
                 openClawResource,
                 options.OpenClawRepositoryPath,
@@ -119,8 +133,10 @@ public sealed class ComposeStackDefinition
                     "DrasiWake__DevEnvironment__OpenClaw__ModelProviderKey",
                     "DrasiWake__DevEnvironment__OpenClaw__ModelProviderEndpoint",
                     "DrasiWake__DevEnvironment__OpenClaw__ModelName",
-                    "DrasiWake__DevEnvironment__OpenClaw__AuthToken"
-                ])
+                    "DrasiWake__DevEnvironment__OpenClaw__AuthToken",
+                    "DRASIWAKE_FIXTURE_CONFIG_PATH"
+                ],
+                composeFilePath: options.OpenClawComposeFilePath)
         ];
     }
 }

@@ -15,6 +15,7 @@
 - Fail on pre-existing Compose/container/port conflicts. Never adopt, stop, or clean up resources not started by this AppHost lifetime.
 - Cleanup only the stacks started by this AppHost lifetime, in reverse start order; never use `down --volumes` or `down -v`.
 - Do not enable the OpenClaw `with-tls` profile in the initial implementation.
+- Keep Drasi mock config, Compose override, and OpenClaw MetaSkill under this repository's `dev/fixtures`; do not edit either sibling repository.
 - Keep Docker-facing logic behind an injectable command executor so unit tests need no Docker daemon or external repositories.
 
 ## Task 1: Establish Aspire Lifecycle and Compose Contracts
@@ -207,11 +208,12 @@
 
 **Steps:**
 
-1. Document required sibling repository layout, path overrides, AppHost User Secrets/environment configuration for both keys, startup command, and expected dashboard resources.
+1. Document required sibling repository layout, repository-local fixture paths and IDs, path overrides, AppHost User Secrets/environment configuration for model credentials and the Gateway token, startup command, and expected dashboard resources.
 2. Document Docker/Compose prerequisites, the no-takeover conflict behavior, cleanup semantics, preserved volumes, and the known host-network exposure risk from existing Compose port bindings.
 3. Document that Aspire is not part of production deployment and that external Compose files remain the source of truth.
-4. With Docker Desktop, both external repositories, and valid local secrets available, start the AppHost and verify Drasi/PostgreSQL and OpenClaw health precede Host startup; verify Host uses the discovered endpoints and configured Bearer Token.
-5. Stop the AppHost and verify its containers stop while `drasi_postgres_data` and the OpenClaw memory volume remain. Verify a deliberately occupied port or pre-existing container yields a clear failure and is not stopped by AppHost.
+4. With Docker Desktop, both external repositories, and a local model provider key available, run the opt-in smoke; verify Drasi/PostgreSQL and OpenClaw health precede Host startup and that Host receives discovered endpoints. For smoke only, a missing Gateway token may be generated temporarily by the test fixture.
+5. Run the two opt-in external contract tests using the repository-local instance/query/MetaSkill defaults; retain environment-variable overrides for alternate fixtures. The Gateway contract test may incur one model-generation charge.
+6. Stop the AppHost and verify its containers stop while `drasi_postgres_data` and the OpenClaw memory volume remain. Verify a deliberately occupied port or pre-existing container yields a clear failure and is not stopped by AppHost.
 
 **Verification:**
 
@@ -228,4 +230,5 @@
 - Normal shutdown stops Host before Compose dependencies, preserves all named volumes, and attempts cleanup of both owned stacks.
 - Unit tests prove preflight, path resolution, secret handling/redaction, readiness gating, port parsing, rollback, ownership, and shutdown semantics without Docker.
 - Solution tests and Release build pass; the real-Docker smoke-test status is reported separately.
+- Drasi and OpenClaw test fixtures live in this repository and are supplied to unchanged sibling Compose projects through local paths/overrides.
 - No changes are made to external Drasi/OpenClaw repositories or production Host runtime dependencies.

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 
 namespace DrasiWake.LocalEnvironment;
 
@@ -12,9 +13,11 @@ public sealed class ComposeEnvironmentCoordinator(
     ComposeEnvironmentState state) : IComposeEnvironmentRuntime
 {
     private static readonly TimeSpan PreflightTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ComposeStartTimeout = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan ComposeTimeout = TimeSpan.FromMinutes(4);
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly ConcurrentDictionary<string, ComposeStackDefinition> _ownedStacks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ComposeStackDefinition> _readyStacks = new(StringComparer.Ordinal);
     private bool _started;
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -42,6 +45,7 @@ public sealed class ComposeEnvironmentCoordinator(
                 foreach (var stack in stacks)
                 {
                     await resourceNotifier.MarkReadyAsync(stack.Resource);
+                    _readyStacks.TryAdd(stack.ProjectName, stack);
                 }
 
                 _started = true;
@@ -71,14 +75,21 @@ public sealed class ComposeEnvironmentCoordinator(
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            var readyStacks = _readyStacks.Values.ToArray();
             var cleanupErrors = await CleanupOwnedStacksAsync();
             state.Clear();
             _started = false;
-            foreach (var stack in stacks)
+            foreach (var stack in readyStacks)
             {
+                if (_ownedStacks.ContainsKey(stack.ProjectName))
+                {
+                    continue;
+                }
+
                 try
                 {
                     await resourceNotifier.MarkStoppedAsync(stack.Resource);
+                    _readyStacks.TryRemove(stack.ProjectName, out _);
                 }
                 catch (Exception exception)
                 {
@@ -165,7 +176,7 @@ public sealed class ComposeEnvironmentCoordinator(
                 options.RepositoryRoot,
                 PreflightTimeout,
                 cancellationToken);
-            EnsureSuccessful(result, "container conflict check");
+            EnsureSuccessful(result, "container conflict check", stack.SecretValues);
             if (!string.IsNullOrWhiteSpace(result.StandardOutput))
             {
                 throw new InvalidOperationException(
@@ -183,9 +194,9 @@ public sealed class ComposeEnvironmentCoordinator(
             var result = await ExecuteComposeAsync(
                 stack,
                 ["up", "--detach", "--wait", "--wait-timeout", "180"],
-                ComposeTimeout,
+                ComposeStartTimeout,
                 startupCancellation.Token);
-            EnsureSuccessful(result, $"starting {stack.Resource.Name}");
+            EnsureSuccessful(result, $"starting {stack.Resource.Name}", stack.SecretValues);
             _ownedStacks.TryAdd(stack.ProjectName, stack);
         }
         catch
@@ -204,7 +215,7 @@ public sealed class ComposeEnvironmentCoordinator(
             ["port", stack.ServiceName, stack.ContainerPort.ToString(System.Globalization.CultureInfo.InvariantCulture)],
             PreflightTimeout,
             cancellationToken);
-        EnsureSuccessful(result, $"discovering {stack.Resource.Name} address");
+        EnsureSuccessful(result, $"discovering {stack.Resource.Name} address", stack.SecretValues);
         return ComposePortParser.Parse(result.StandardOutput, stack.ServiceName);
     }
 
@@ -221,9 +232,15 @@ public sealed class ComposeEnvironmentCoordinator(
             stack.RepositoryPath,
             "--file",
             stack.ComposeFilePath,
-            "--project-name",
-            stack.ProjectName
         };
+        if (!string.IsNullOrWhiteSpace(stack.ComposeOverrideFilePath))
+        {
+            arguments.Add("--file");
+            arguments.Add(stack.ComposeOverrideFilePath);
+        }
+
+        arguments.Add("--project-name");
+        arguments.Add(stack.ProjectName);
         arguments.AddRange(composeArguments);
 
         var command = new ComposeCommand(
@@ -276,7 +293,7 @@ public sealed class ComposeEnvironmentCoordinator(
                     options.RepositoryRoot,
                     PreflightTimeout,
                     CancellationToken.None);
-                EnsureSuccessful(result, $"checking ownership for {stack.Resource.Name}");
+                EnsureSuccessful(result, $"checking ownership for {stack.Resource.Name}", stack.SecretValues);
                 if (!string.IsNullOrWhiteSpace(result.StandardOutput))
                 {
                     _ownedStacks.TryAdd(stack.ProjectName, stack);
@@ -309,7 +326,7 @@ public sealed class ComposeEnvironmentCoordinator(
                     ["down"],
                     ComposeTimeout,
                     CancellationToken.None);
-                EnsureSuccessful(result, $"stopping {stack.Resource.Name}");
+                EnsureSuccessful(result, $"stopping {stack.Resource.Name}", stack.SecretValues);
                 _ownedStacks.TryRemove(stack.ProjectName, out _);
             }
             catch (Exception exception)
@@ -321,12 +338,41 @@ public sealed class ComposeEnvironmentCoordinator(
         return errors;
     }
 
-    private static void EnsureSuccessful(ComposeCommandResult result, string stage)
+    private void EnsureSuccessful(
+        ComposeCommandResult result,
+        string stage,
+        IReadOnlyList<string>? additionalSecretValues = null)
     {
-        if (result.ExitCode != 0)
+        if (result.ExitCode == 0)
         {
-            throw new InvalidOperationException($"Docker operation failed during {stage} (exit code {result.ExitCode}).");
+            return;
         }
+
+        var details = string.IsNullOrWhiteSpace(result.StandardError)
+            ? result.StandardOutput
+            : result.StandardError;
+        foreach (var secret in new[] { options.ModelProviderKey, options.AuthToken }
+                     .Concat(additionalSecretValues ?? [])
+                     .Where(value => !string.IsNullOrEmpty(value))
+                     .Distinct(StringComparer.Ordinal)
+                     .OrderByDescending(value => value.Length))
+        {
+            details = details.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
+        }
+
+        details = Regex.Replace(
+            details,
+            "(?i)([A-Z0-9_.-]*(?:PASSWORD|PASSWD|TOKEN|SECRET|API[_-]?KEY)[A-Z0-9_.-]*\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*'|[^\\s,;]+)",
+            "$1[REDACTED]");
+        details = Regex.Replace(details, "\\s+", " ").Trim();
+        if (details.Length > 500)
+        {
+            details = "..." + details[^500..];
+        }
+
+        var detailSuffix = string.IsNullOrWhiteSpace(details) ? string.Empty : $" Details: {details}";
+        throw new InvalidOperationException(
+            $"Docker operation failed during {stage} (exit code {result.ExitCode}).{detailSuffix}");
     }
 
     private static bool IsPortInUse(int port)
