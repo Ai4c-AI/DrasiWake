@@ -38,6 +38,10 @@ builder.AddProject<Projects.DrasiWake_Host>("drasiwake-host")
 		context.EnvironmentVariables["DrasiWake__OpenClaw__BaseAddress"] =
 			environmentState.OpenClawBaseAddress?.ToString()
 			?? throw new InvalidOperationException("OpenClaw address was not discovered before Host startup.");
+		if (options.AspireRegistryPathOverride is { } registryPath)
+		{
+			context.EnvironmentVariables["DrasiWake__Registry__Path"] = registryPath;
+		}
 	})
 	.WithEnvironment("DrasiWake__OpenClaw__BearerToken", authToken);
 

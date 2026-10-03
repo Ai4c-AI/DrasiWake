@@ -171,6 +171,31 @@ public sealed class ComposeEnvironmentValidatorTests
     }
 
     [Fact]
+    public void Selects_aspire_sensor_registry_only_when_end_to_end_mode_is_enabled()
+    {
+        using var fixture = new EnvironmentFixture();
+        var defaults = ComposeEnvironmentOptions.FromConfiguration(
+            CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DRASIWAKE_RUN_REAL_ASPIRE_SMOKE"] = "1",
+                ["DRASIWAKE_RUN_REAL_DRASI_CONTRACT_TESTS"] = "1",
+                ["DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS"] = "1"
+            }),
+            fixture.Root);
+        var enabled = ComposeEnvironmentOptions.FromConfiguration(
+            CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:DevEnvironment:EnableAspireEndToEnd"] = "true"
+            }),
+            fixture.Root);
+
+        Assert.Null(defaults.AspireRegistryPathOverride);
+        Assert.Equal(
+            Path.Combine(fixture.Root, "src", "DrasiWake.Host", "contracts", "aspire-sensor-binding.yaml"),
+            enabled.AspireRegistryPathOverride);
+    }
+
+    [Fact]
     public void Validates_repository_local_fixture_files()
     {
         using var fixture = new EnvironmentFixture();

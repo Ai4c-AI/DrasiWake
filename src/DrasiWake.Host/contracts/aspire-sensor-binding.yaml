@@ -1,0 +1,20 @@
+version: 1.0.0
+bindings:
+  - id: aspire-sensor-readings
+    source: drasi-server
+    server: http://127.0.0.1:8080
+    instanceId: drasiwake-sensor-monitor
+    queryId: sensor-readings
+    deliveryMode: converge-latest
+    sessionScope: per-query
+    metaSkill: drasiwake-sensor-reading-summary
+    contractVersion: 1.0.0
+    factSchemaPath: aspire-sensor-reading.schema.json
+    maxPayloadBytes: 32768
+    triggerPhrases: []
+    retry:
+      maxAttempts: 5
+      maxAgeSeconds: 86400
+    rateLimit:
+      permitLimit: 10
+      windowMilliseconds: 1000

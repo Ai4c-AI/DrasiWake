@@ -11,7 +11,8 @@ public sealed class ComposeEnvironmentOptions
         string modelProviderKey,
         string authToken,
         string modelProviderEndpoint = "",
-        string modelName = "")
+        string modelName = "",
+        bool enableAspireEndToEnd = false)
     {
         RepositoryRoot = Path.GetFullPath(repositoryRoot);
         DrasiRepositoryPath = drasiRepositoryPath;
@@ -20,6 +21,7 @@ public sealed class ComposeEnvironmentOptions
         AuthToken = authToken;
         ModelProviderEndpoint = modelProviderEndpoint;
         ModelName = modelName;
+        EnableAspireEndToEnd = enableAspireEndToEnd;
     }
 
     public string RepositoryRoot { get; }
@@ -42,6 +44,16 @@ public sealed class ComposeEnvironmentOptions
         "drasiwake-sensor-reading-summary",
         "SKILL.md");
 
+    public string AspireSensorRegistryPath => Path.Combine(
+        RepositoryRoot,
+        "src",
+        "DrasiWake.Host",
+        "contracts",
+        "aspire-sensor-binding.yaml");
+
+    public string? AspireRegistryPathOverride =>
+        EnableAspireEndToEnd ? AspireSensorRegistryPath : null;
+
     public string DrasiRepositoryPath { get; }
 
     public string OpenClawRepositoryPath { get; }
@@ -54,6 +66,8 @@ public sealed class ComposeEnvironmentOptions
 
     public string ModelName { get; }
 
+    public bool EnableAspireEndToEnd { get; }
+
     public static ComposeEnvironmentOptions FromConfiguration(
         IConfiguration configuration,
         string repositoryRoot)
@@ -62,6 +76,9 @@ public sealed class ComposeEnvironmentOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(repositoryRoot);
 
         var root = Path.GetFullPath(repositoryRoot);
+        var enableAspireEndToEnd = bool.TryParse(
+            configuration["DrasiWake:DevEnvironment:EnableAspireEndToEnd"],
+            out var configuredEndToEndEnabled) && configuredEndToEndEnabled;
         return new ComposeEnvironmentOptions(
             root,
             ResolvePath(configuration["DrasiWake:DevEnvironment:DrasiRepositoryPath"], "drasi-server", root),
@@ -81,7 +98,8 @@ public sealed class ComposeEnvironmentOptions
                 configuration,
                 "DrasiWake:DevEnvironment:OpenClaw:ModelName",
                 "MODEL_PROVIDER_MODEL",
-                "LLM_MODEL_NAME"));
+                "LLM_MODEL_NAME"),
+            enableAspireEndToEnd);
     }
 
     private static string GetConfiguredValue(
