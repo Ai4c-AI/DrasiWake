@@ -1,0 +1,42 @@
+apiVersion: drasi.io/v1
+host: "0.0.0.0"
+port: 8080
+logLevel: info
+persistConfig: false
+autoInstallPlugins: true
+plugins:
+  - ref: source/mock:0.2.12
+  - ref: reaction/log:0.2.9
+
+instances:
+  - id: drasiwake-sensor-monitor
+    persistIndex: false
+    sources:
+      - kind: mock
+        id: sensor-mock
+        autoStart: true
+        dataType:
+          type: sensorReading
+        intervalMs: 3000
+    queries:
+      - id: sensor-readings
+        autoStart: true
+        query: |
+          MATCH (s:SensorReading)
+          RETURN s.sensor_id AS SensorId, s.temperature AS Temperature, s.humidity AS Humidity
+        queryLanguage: Cypher
+        sources:
+          - sourceId: sensor-mock
+    reactions:
+      - kind: log
+        id: sensor-readings-log
+        queries:
+          - sensor-readings
+        autoStart: true
+        defaultTemplate:
+          added:
+            template: "[+] Sensor {{after.SensorId}}: temp={{after.Temperature}} humidity={{after.Humidity}}"
+          updated:
+            template: "[~] Sensor {{after.SensorId}}: temp={{after.Temperature}} humidity={{after.Humidity}}"
+          deleted:
+            template: "[-] Sensor {{before.SensorId}} removed"

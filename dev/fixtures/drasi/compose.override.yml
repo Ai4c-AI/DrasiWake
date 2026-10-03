@@ -1,0 +1,12 @@
+services:
+  drasi-server:
+    image: drasi-server:0.2.3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["--config", "/app/config/server.yaml", "--plugins-dir", "/app/plugins"]
+    volumes:
+      - type: bind
+        source: ${DRASIWAKE_FIXTURE_CONFIG_PATH:?DrasiWake fixture config path is required}
+        target: /app/config
+        read_only: true

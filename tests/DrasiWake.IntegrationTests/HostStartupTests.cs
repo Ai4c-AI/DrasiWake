@@ -1,7 +1,11 @@
 using DrasiWake.Host;
 using DrasiWake.Core.Contracts;
+using DrasiWake.Core.Domain;
+using DrasiWake.Core.Pipeline;
+using DrasiWake.LocalEnvironment;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json.Nodes;
 
 namespace DrasiWake.IntegrationTests;
 
@@ -17,6 +21,61 @@ public sealed class HostStartupTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => host.StartAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void Aspire_environment_keys_bind_existing_host_endpoints_and_token()
+    {
+        var configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:45123/",
+            ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:45678/",
+            ["DrasiWake:OpenClaw:BearerToken"] = "gateway-test-token"
+        });
+
+        var settings = DrasiWakeHostSettings.FromConfiguration(configuration);
+
+        Assert.Equal(new Uri("http://127.0.0.1:45123/"), settings.Drasi.ServerUri);
+        Assert.Equal(new Uri("http://127.0.0.1:45678/"), settings.OpenClaw.BaseAddress);
+        Assert.Equal("gateway-test-token", settings.OpenClaw.BearerToken);
+    }
+
+    [Fact]
+    public async Task Aspire_sensor_binding_matches_fixture_and_accepts_sensor_rows()
+    {
+        var repositoryRoot = RepositoryRootLocator.Find(AppContext.BaseDirectory);
+        var registryPath = Path.Combine(
+            repositoryRoot,
+            "src",
+            "DrasiWake.Host",
+            "contracts",
+            "aspire-sensor-binding.yaml");
+        var candidate = await new ContractRegistryLoader().LoadCandidateAsync(
+            registryPath,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(candidate.IsValid, string.Join("; ", candidate.Errors.Select(error => error.Message)));
+        var binding = Assert.Single(candidate.Registry!.Bindings);
+        Assert.Equal("drasi-server", binding.Source);
+        Assert.Equal(new Uri("http://127.0.0.1:8080/"), binding.Server);
+        Assert.Equal("drasiwake-sensor-monitor", binding.InstanceId);
+        Assert.Equal("sensor-readings", binding.QueryId);
+        Assert.Equal("drasiwake-sensor-reading-summary", binding.MetaSkill);
+
+        var renderer = new WakePayloadRenderer();
+        var query = new QueryIdentity(binding.Server, binding.InstanceId, binding.QueryId!);
+        var rendered = renderer.Render(
+            binding,
+            query,
+            "aspire-e2e-test",
+            [JsonNode.Parse("""{"SensorId":"sensor-1","Temperature":21.5,"Humidity":45.2}""")]);
+
+        Assert.Single((JsonArray)rendered.Input["facts"]!);
+        Assert.Throws<WakePayloadRejectedException>(() => renderer.Render(
+            binding,
+            query,
+            "aspire-e2e-test",
+            [JsonNode.Parse("""{"SensorId":"sensor-1","Temperature":21.5}""")]));
     }
 
     [Fact]

@@ -67,7 +67,7 @@ Host 注册了 `DrasiWake.Bridge` ActivitySource 和 Meter。遥测指标覆盖�
 在仓库根目录运行本地自动化测试套件，并执行 Release 发布：
 
 ```powershell
-dotnet test --solution DrasiWake.sln
+dotnet test --solution DrasiWake.sln --configuration Release
 dotnet publish src/DrasiWake.Host/DrasiWake.Host.csproj -c Release -o artifacts/publish
 ```
 
@@ -81,15 +81,6 @@ Pop-Location
 
 确定性集成测试使用真实 adapter 和 SonnetDB provider，并通过本地 HTTP 契约处理器模拟服务端。测试会验证收敛、幂等重放、数据库重开和崩溃窗口，但不能据此认证已部署的 Drasi 或 OpenClaw Gateway 版本。
 
-真实服务检查需显式启用；未设置运行标志时会跳过。Drasi 检查需要设置 `DRASIWAKE_RUN_REAL_DRASI_CONTRACT_TESTS=1`、`DRASIWAKE_REAL_DRASI_URL`、`DRASIWAKE_REAL_DRASI_INSTANCE_ID` 和 `DRASIWAKE_REAL_DRASI_QUERY_ID`。该检查会枚举查询、读取 results 并发起 attach 请求。当前 adapter 尚未配置 Drasi 身份验证。
+三个真实 Aspire 检查默认跳过。需要运行时，请配置 Aspire 本地环境所需的模型提供方密钥和 Gateway token，并按 [Aspire 本地环境指南](development/aspire-local-environment.md) 显式打开 smoke、Drasi contract 和 Gateway contract 开关。指南包含运行完整解决方案（含三个真实检查）的命令及单项过滤方式。真实 Drasi contract 会枚举查询、读取 results 并 attach；真实 Gateway contract 会通过 `/apps/chat` 建立唯一测试会话，再并发发送相同 MetaInvocation 请求，检查 invocation ID 幂等，并验证 Gateway 幂等保留时间不短于 outbox 最大重试时长。Gateway contract 会调用真实模型服务，可能产生费用；请只对专用测试环境运行。测试不会打印凭据。
 
-Gateway 检查可能会执行 MetaSkill DAG。请只对专用且安全的契约测试 MetaSkill 和 Gateway 运行。需要设置 `DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS=1`、`DRASIWAKE_REAL_GATEWAY_URL`、`DRASIWAKE_REAL_GATEWAY_TOKEN`、`DRASIWAKE_REAL_GATEWAY_TEST_SKILL`、`DRASIWAKE_REAL_GATEWAY_BUILD`、`DRASIWAKE_REAL_GATEWAY_IDEMPOTENCY_RETENTION` 和 `DRASIWAKE_REAL_MAX_OUTBOX_RETRY_AGE`。测试会创建唯一会话和幂等键，并发发送相同请求，检查重放是否返回同一个 invocation ID，并验证声明的保留时间不短于最大重试时长。测试输出会记录 Gateway build 和保留时间，但不会打印凭据。
-
-例如，在当前 PowerShell 终端设置好所需变量后，可通过以下命令显式启用 Gateway 检查：
-
-```powershell
-$env:DRASIWAKE_RUN_REAL_GATEWAY_CONTRACT_TESTS = '1'
-dotnet test --project tests/DrasiWake.IntegrationTests/DrasiWake.IntegrationTests.csproj --filter-class DrasiWake.IntegrationTests.RealGatewayContractTests
-```
-
-在目标部署版本和配置上通过两项真实服务检查，并记录相应证据之前，请保持 V1-ready 门禁关闭。本地模拟服务和单元测试不能替代这些检查。
+2026-10-03：完整解决方案测试通过（109/109），包括 Aspire smoke、Drasi contract 和 Gateway contract。本次真实服务验证针对本地 Aspire fixture 栈，不等同于目标部署版本和配置的契约认证。在目标环境通过三个真实检查并记录结果之前，请保持 V1-ready 门禁关闭。
