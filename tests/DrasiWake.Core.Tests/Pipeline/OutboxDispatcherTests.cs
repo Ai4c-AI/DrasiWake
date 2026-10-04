@@ -141,7 +141,8 @@ public sealed class OutboxDispatcherTests
         DateTimeOffset.UtcNow,
         WakeOutboxStatus.Pending,
         null,
-        null);
+        null,
+        "sample-gateway");
 
     private sealed class StoreAssertingSink(
         RecordingStore store,

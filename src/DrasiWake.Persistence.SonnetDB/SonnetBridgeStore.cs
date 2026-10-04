@@ -305,6 +305,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         SessionId = item.SessionId,
         SnapshotFingerprint = item.SnapshotFingerprint,
         Skill = item.Skill,
+        OpenClawTarget = item.OpenClawTarget,
         InputJson = item.Input.ToJsonString(),
         ContractVersion = item.ContractVersion,
         IdempotencyKey = item.IdempotencyKey,
@@ -331,7 +332,9 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         item.NextAttemptAtUtc,
         item.Status,
         item.InvocationId,
-        item.TraceId);
+        item.TraceId,
+        item.OpenClawTarget ?? throw new InvalidOperationException(
+            $"Wake outbox item '{item.Id}' has no OpenClaw target."));
 
     private static void Copy(WakeOutboxItem source, WakeOutbox target)
     {
@@ -339,6 +342,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         target.SessionId = source.SessionId;
         target.SnapshotFingerprint = source.SnapshotFingerprint;
         target.Skill = source.Skill;
+        target.OpenClawTarget = source.OpenClawTarget;
         target.InputJson = source.Input.ToJsonString();
         target.ContractVersion = source.ContractVersion;
         target.IdempotencyKey = source.IdempotencyKey;

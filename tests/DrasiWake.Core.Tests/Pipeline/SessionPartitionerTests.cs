@@ -241,5 +241,5 @@ public sealed class SessionPartitionerTests
     private static WakeOutboxItem CreateItem(string sessionId, string traceId) => new(
         Guid.NewGuid(), "binding-1", sessionId, $"fingerprint-{traceId}", "triage-order",
         new JsonObject(), "1.0.0", $"drasiwake:{traceId}", 0, DateTimeOffset.UtcNow,
-        DateTimeOffset.UtcNow, WakeOutboxStatus.Dispatching, null, traceId);
+        DateTimeOffset.UtcNow, WakeOutboxStatus.Dispatching, null, traceId, "sample-gateway");
 }

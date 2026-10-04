@@ -28,4 +28,5 @@ public sealed record WakeOutboxItem(
     DateTimeOffset NextAttemptAtUtc,
     WakeOutboxStatus Status,
     string? InvocationId,
-    string? TraceId);
+    string? TraceId,
+    string OpenClawTarget);

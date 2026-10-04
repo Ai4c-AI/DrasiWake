@@ -9,6 +9,7 @@ public sealed class WakeOutbox
     public string SessionId { get; set; } = string.Empty;
     public string SnapshotFingerprint { get; set; } = string.Empty;
     public string Skill { get; set; } = string.Empty;
+    public string? OpenClawTarget { get; set; }
     public string InputJson { get; set; } = "{}";
     public string ContractVersion { get; set; } = string.Empty;
     public string IdempotencyKey { get; set; } = string.Empty;

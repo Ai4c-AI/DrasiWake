@@ -26,6 +26,9 @@ public sealed class SnapshotReconcilerTests
         Assert.Equal(WakeOutboxStatus.Pending, store.OutboxItems[0].Status);
         Assert.Equal("1.0.0", store.OutboxItems[0].Input["contractVersion"]!.GetValue<string>());
         Assert.Equal("order-1", store.OutboxItems[0].Input["facts"]![0]!["orderId"]!.GetValue<string>());
+        var targetProperty = typeof(WakeOutboxItem).GetProperty("OpenClawTarget");
+        Assert.NotNull(targetProperty);
+        Assert.Equal("sample-gateway", targetProperty.GetValue(store.OutboxItems[0]));
     }
 
     [Fact]
@@ -63,7 +66,8 @@ public sealed class SnapshotReconcilerTests
             DateTimeOffset.UtcNow,
             WakeOutboxStatus.Pending,
             null,
-            null);
+            null,
+            "sample-gateway");
         var store = new RecordingStore(new RecoveryState(
             [pending],
             [new SnapshotCheckpoint("orders-binding", "singleton", checkpointFingerprint, DateTimeOffset.UtcNow)]));
@@ -98,7 +102,7 @@ public sealed class SnapshotReconcilerTests
         var oldPending = new WakeOutboxItem(
             Guid.NewGuid(), binding.Id, "removed-session", "old-pending-fingerprint", "triage-order",
             new System.Text.Json.Nodes.JsonObject(), "1.0.0", "drasiwake:old", 0,
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, null);
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, null, "sample-gateway");
         var checkpoint = new SnapshotCheckpoint(
             binding.Id, "removed-session", "old-accepted-fingerprint", DateTimeOffset.UtcNow);
         var currentSnapshot = new QuerySnapshot(query,

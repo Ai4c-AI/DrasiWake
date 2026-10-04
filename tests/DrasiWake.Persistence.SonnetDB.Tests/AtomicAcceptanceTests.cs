@@ -109,8 +109,9 @@ public sealed class AtomicAcceptanceTests
                     item => item.BindingId == pendingWake.BindingId && item.SessionId == pendingWake.SessionId,
                     TestContext.Current.CancellationToken);
 
-            Assert.Single(migrations);
+            Assert.Equal(2, migrations.Count());
             Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
+            Assert.Equal(pendingWake.OpenClawTarget, persistedWake.OpenClawTarget);
             Assert.Equal(pendingWake.SnapshotFingerprint, persistedCheckpoint.Fingerprint);
         }
         finally
@@ -311,7 +312,8 @@ public sealed class AtomicAcceptanceTests
             var replacement = ToDomain(superseded) with
             {
                 SnapshotFingerprint = "replacement-fingerprint",
-                Status = WakeOutboxStatus.Pending
+                Status = WakeOutboxStatus.Pending,
+                OpenClawTarget = "sample-gateway"
             };
             var persisted = await store.CreateOrUpdatePendingWakeAsync(
                 replacement,
@@ -381,6 +383,7 @@ public sealed class AtomicAcceptanceTests
         SessionId = "session-1",
         SnapshotFingerprint = "new-fingerprint",
         Skill = "triage-order",
+        OpenClawTarget = "sample-gateway",
         InputJson = "{}",
         ContractVersion = "v1",
         IdempotencyKey = $"drasiwake:{Guid.NewGuid():N}",
@@ -404,7 +407,8 @@ public sealed class AtomicAcceptanceTests
         item.NextAttemptAtUtc,
         item.Status,
         item.InvocationId,
-        item.TraceId);
+        item.TraceId,
+        item.OpenClawTarget!);
 
     private static DbContextOptions<BridgeDbContext> CreateOptions(
         string connectionString,

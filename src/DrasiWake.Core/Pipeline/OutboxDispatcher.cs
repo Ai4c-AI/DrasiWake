@@ -31,7 +31,8 @@ public sealed class OutboxDispatcher(
             item.Input,
             item.IdempotencyKey,
             item.ContractVersion,
-            item.TraceId);
+            item.TraceId,
+            item.OpenClawTarget);
 
         WakeAcceptance acceptance;
         try

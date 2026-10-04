@@ -69,5 +69,6 @@ public sealed class GatewayIdempotencyTests
         },
         idempotencyKey,
         "1.0.0",
-        null);
+        null,
+        "sample-gateway");
 }

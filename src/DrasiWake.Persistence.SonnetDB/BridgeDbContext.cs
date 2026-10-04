@@ -51,6 +51,7 @@ public sealed class BridgeDbContext(DbContextOptions<BridgeDbContext> options) :
             entity.Property(item => item.SessionId).HasMaxLength(2048);
             entity.Property(item => item.SnapshotFingerprint).HasMaxLength(128);
             entity.Property(item => item.Skill).HasMaxLength(512);
+            entity.Property(item => item.OpenClawTarget).HasMaxLength(512);
             entity.Property(item => item.ContractVersion).HasMaxLength(256);
             entity.Property(item => item.IdempotencyKey).HasMaxLength(512);
             entity.Property(item => item.InvocationId).HasMaxLength(512);

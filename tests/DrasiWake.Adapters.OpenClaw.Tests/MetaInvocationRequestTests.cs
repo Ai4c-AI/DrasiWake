@@ -27,7 +27,8 @@ public sealed class MetaInvocationRequestTests
             JsonNode.Parse("""{"ticket":"INC-42"}""")!.AsObject(),
             "drasiwake:outbox-42",
             "1.0",
-            null);
+            null,
+            "sample-gateway");
 
         var acceptance = await client.InvokeAsync(request, CancellationToken.None);
 
@@ -57,7 +58,8 @@ public sealed class MetaInvocationRequestTests
             JsonNode.Parse("""{"ticket":"INC-42"}""")!.AsObject(),
             "drasiwake:outbox-42",
             "1.0",
-            null);
+            null,
+            "sample-gateway");
 
         var status = await client.GetStatusAsync(request, CancellationToken.None);
 
@@ -151,7 +153,8 @@ public sealed class MetaInvocationRequestTests
         JsonNode.Parse("""{"ticket":"INC-42"}""")!.AsObject(),
         "drasiwake:outbox-42",
         "1.0",
-        null);
+        null,
+        "sample-gateway");
 
     private static HttpResponseMessage AcceptedResponse() => new(HttpStatusCode.Accepted)
     {

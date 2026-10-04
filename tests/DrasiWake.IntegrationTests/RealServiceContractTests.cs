@@ -147,7 +147,8 @@ public sealed class RealGatewayContractTests
             },
             $"drasiwake:real-contract:{runId}",
             "1.0.0",
-            null);
+            null,
+            "sensor-gateway");
 
         var acceptances = await Task.WhenAll(
             client.InvokeAsync(request, TestContext.Current.CancellationToken).AsTask(),

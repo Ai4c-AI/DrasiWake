@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 using DrasiWake.Core.Pipeline;
 using DrasiWake.IntegrationTests.Fixtures;
@@ -80,6 +81,26 @@ public sealed class CrashRecoveryTests
     }
 
     [Fact]
+    public async Task Persisted_target_is_unchanged_when_binding_target_changes()
+    {
+        await using var fixture = await BridgeTestFixture.CreateAsync(TestContext.Current.CancellationToken);
+        var pending = await CreatePendingWakeAsync(fixture);
+        var binding = Assert.Single(fixture.Registry.Active.Bindings);
+        Assert.True(fixture.Registry.TryActivate(new ContractRegistryCandidate(
+            new ContractRegistry("2.0.0", [binding with { OpenClawTarget = "changed-gateway" }]),
+            [])));
+        await fixture.RestartDatabaseAsync(TestContext.Current.CancellationToken);
+
+        var recovered = Assert.Single(
+            (await fixture.CreateStore().LoadRecoveryStateAsync(TestContext.Current.CancellationToken)).DispatchableItems);
+        var targetProperty = typeof(WakeOutboxItem).GetProperty("OpenClawTarget");
+
+        Assert.NotNull(targetProperty);
+        Assert.Equal("sample-gateway", targetProperty.GetValue(recovered));
+        Assert.Equal(pending.IdempotencyKey, recovered.IdempotencyKey);
+    }
+
+    [Fact]
     public async Task Gateway_acceptance_before_local_commit_is_replayed_idempotently_after_restart()
     {
         await using var fixture = await BridgeTestFixture.CreateAsync(TestContext.Current.CancellationToken);
@@ -151,5 +172,6 @@ public sealed class CrashRecoveryTests
         item.Input,
         item.IdempotencyKey,
         item.ContractVersion,
-        item.TraceId);
+        item.TraceId,
+        item.OpenClawTarget);
 }

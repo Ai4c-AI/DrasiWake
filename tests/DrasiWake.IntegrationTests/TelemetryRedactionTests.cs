@@ -14,7 +14,7 @@ public sealed class TelemetryRedactionTests
         var query = new QueryIdentity(new Uri($"https://user:{secret}@drasi.test/{secret}?token={secret}"), secret, secret);
         var item = new WakeOutboxItem(
             Guid.NewGuid(), secret, secret, secret, secret, new System.Text.Json.Nodes.JsonObject { ["secret"] = secret },
-            "1.0.0", secret, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, secret);
+            "1.0.0", secret, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, secret, "sample-gateway");
         using var activityListener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == BridgeTelemetry.ActivitySourceName,

@@ -160,7 +160,8 @@ public sealed class SnapshotReconciler(
                         timeProvider.GetUtcNow(),
                         WakeOutboxStatus.Pending,
                         null,
-                        null);
+                        null,
+                        binding.OpenClawTarget);
                     _ = await store.CreateOrUpdatePendingWakeAsync(item, cancellationToken);
                     BridgeTelemetry.RecordOutboxCreated(item);
                 }
@@ -212,6 +213,7 @@ public sealed class SnapshotReconciler(
             now,
             WakeOutboxStatus.DeadLetter,
             null,
-            null);
+            null,
+            binding.OpenClawTarget);
     }
 }

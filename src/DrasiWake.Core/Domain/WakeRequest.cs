@@ -9,4 +9,5 @@ public sealed record WakeRequest(
     JsonObject Input,
     string IdempotencyKey,
     string ContractVersion,
-    string? TraceId);
+    string? TraceId,
+    string OpenClawTarget);

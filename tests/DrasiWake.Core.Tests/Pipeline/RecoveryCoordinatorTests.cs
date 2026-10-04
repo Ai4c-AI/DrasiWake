@@ -20,7 +20,7 @@ public sealed class RecoveryCoordinatorTests
             Guid.NewGuid(), "orders-binding", "singleton", fingerprint, "triage-order",
             new JsonObject { ["facts"] = new JsonArray(JsonNode.Parse("""{"orderId":"42"}""")) },
             "1.0.0", "drasiwake:persisted-key", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-            WakeOutboxStatus.Pending, null, null);
+            WakeOutboxStatus.Pending, null, null, "sample-gateway");
         var store = new RecordingStore(pending);
         var source = new BlockingSnapshotSource(query, snapshot);
         var reconciler = new SnapshotReconciler(source, store, CreateRegistry(query));
@@ -74,7 +74,7 @@ public sealed class RecoveryCoordinatorTests
         var pending = new WakeOutboxItem(
             Guid.NewGuid(), "orders-binding", "singleton", "fingerprint", "triage-order",
             new JsonObject(), "1.0.0", "drasiwake:retry-key", 0, DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, null);
+            DateTimeOffset.UtcNow, WakeOutboxStatus.Pending, null, null, "sample-gateway");
         var store = new RecordingStore(pending);
         var source = new FailingSnapshotSource(query);
         var reconciler = new SnapshotReconciler(source, store, CreateRegistry(query));
