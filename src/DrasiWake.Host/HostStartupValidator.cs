@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Hosting;
+using DrasiWake.Core.Abstractions;
 using DrasiWake.Persistence.SonnetDB;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,7 +9,8 @@ public sealed class HostStartupValidator(
     DrasiWakeHostSettings settings,
     DrasiWake.Core.Contracts.ContractRegistryLoader registryLoader,
     DrasiWake.Core.Contracts.ContractRegistryManager registryManager,
-    IDbContextFactory<BridgeDbContext> contextFactory) : IHostedService, IDisposable
+    IDbContextFactory<BridgeDbContext> contextFactory,
+    IBridgeStore store) : IHostedService, IDisposable
 {
     private FileStream? databaseLease;
 
@@ -63,6 +65,13 @@ public sealed class HostStartupValidator(
 
         await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
         await context.Database.MigrateAsync(cancellationToken);
+
+        var targetByBindingId = candidate.Registry.Bindings.ToDictionary(
+            binding => binding.Id,
+            binding => binding.OpenClawTarget,
+            StringComparer.Ordinal);
+        var configuredTargetNames = settings.OpenClawTargets.Keys.ToHashSet(StringComparer.Ordinal);
+        await store.EnsureOpenClawTargetsAsync(targetByBindingId, configuredTargetNames, cancellationToken);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

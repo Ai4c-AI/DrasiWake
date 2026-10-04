@@ -298,6 +298,56 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         return new RecoveryState(dispatchable, checkpoints);
     }
 
+    public async ValueTask EnsureOpenClawTargetsAsync(
+        IReadOnlyDictionary<string, string> targetByBindingId,
+        IReadOnlySet<string> configuredTargetNames,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(targetByBindingId);
+        ArgumentNullException.ThrowIfNull(configuredTargetNames);
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+        var activeItems = await context.WakeOutbox
+            .Where(item =>
+                item.Status == WakeOutboxStatus.Pending ||
+                item.Status == WakeOutboxStatus.Dispatching ||
+                item.Status == WakeOutboxStatus.RetryScheduled ||
+                item.Status == WakeOutboxStatus.Accepted ||
+                item.Status == WakeOutboxStatus.Executing)
+            .OrderBy(item => item.Id)
+            .ToListAsync(cancellationToken);
+
+        var changed = false;
+        foreach (var item in activeItems)
+        {
+            if (string.IsNullOrWhiteSpace(item.OpenClawTarget))
+            {
+                if (!targetByBindingId.TryGetValue(item.BindingId, out var bindingTarget) ||
+                    string.IsNullOrWhiteSpace(bindingTarget))
+                {
+                    throw new InvalidOperationException(
+                        $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' has no configured binding target.");
+                }
+
+                item.OpenClawTarget = bindingTarget;
+                item.Version++;
+                changed = true;
+            }
+
+            if (!configuredTargetNames.Contains(item.OpenClawTarget))
+            {
+                throw new InvalidOperationException(
+                    $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' references unconfigured OpenClaw target '{item.OpenClawTarget}'.");
+            }
+        }
+
+        if (changed)
+            await context.SaveChangesAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     private static WakeOutbox ToEntity(WakeOutboxItem item) => new()
     {
         Id = item.Id,

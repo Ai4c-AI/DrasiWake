@@ -248,5 +248,11 @@ public sealed class OutboxDispatcherTests
 
         public ValueTask<RecoveryState> LoadRecoveryStateAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(new RecoveryState(Items, []));
+
+        public ValueTask EnsureOpenClawTargetsAsync(
+            IReadOnlyDictionary<string, string> targetByBindingId,
+            IReadOnlySet<string> configuredTargetNames,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
     }
 }

@@ -13,4 +13,8 @@ public interface IBridgeStore
     ValueTask MarkRetryScheduledAsync(Guid outboxId, int attemptCount, DateTimeOffset nextAttemptUtc, string reasonCode, CancellationToken cancellationToken);
     ValueTask MarkDeadLetterAsync(Guid outboxId, string reasonCode, CancellationToken cancellationToken);
     ValueTask<RecoveryState> LoadRecoveryStateAsync(CancellationToken cancellationToken);
+    ValueTask EnsureOpenClawTargetsAsync(
+        IReadOnlyDictionary<string, string> targetByBindingId,
+        IReadOnlySet<string> configuredTargetNames,
+        CancellationToken cancellationToken);
 }

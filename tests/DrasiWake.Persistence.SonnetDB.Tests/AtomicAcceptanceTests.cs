@@ -2,6 +2,8 @@ using DrasiWake.Core.Domain;
 using DrasiWake.Persistence.SonnetDB;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using DrasiWake.Persistence.SonnetDB.Entities;
 using CoreSnapshotCheckpoint = DrasiWake.Core.Domain.SnapshotCheckpoint;
 using SnapshotCheckpointEntity = DrasiWake.Persistence.SonnetDB.Entities.SnapshotCheckpoint;
@@ -113,6 +115,69 @@ public sealed class AtomicAcceptanceTests
             Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
             Assert.Equal(pendingWake.OpenClawTarget, persistedWake.OpenClawTarget);
             Assert.Equal(pendingWake.SnapshotFingerprint, persistedCheckpoint.Fingerprint);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_pending_row_is_backfilled_after_nullable_target_migration()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"DrasiWake-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            var options = CreateOptions($"Data Source={databaseDirectory}");
+            var outboxId = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            const string bindingId = "binding-1";
+            const string sessionId = "session-legacy";
+            const string snapshotFingerprint = "legacy-fingerprint";
+            const string skill = "triage-order";
+            const string inputJson = "{}";
+            const string contractVersion = "v1";
+            var idempotencyKey = $"drasiwake:{outboxId:N}";
+            string? nullValue = null;
+
+            await using (var context = new BridgeDbContext(options))
+            {
+                var migrator = context.GetService<IMigrator>();
+                await migrator.MigrateAsync(
+                    "20261002145302_InitialBridgeState",
+                    TestContext.Current.CancellationToken);
+                await context.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO "WakeOutbox" (
+                        "Id", "BindingId", "SessionId", "SnapshotFingerprint", "Skill", "InputJson",
+                        "ContractVersion", "IdempotencyKey", "AttemptCount", "CreatedAtUtc",
+                        "NextAttemptAtUtc", "Status", "InvocationId", "TraceId", "LastErrorCode",
+                        "RetainUntilUtc", "Version")
+                    VALUES (
+                        {outboxId}, {bindingId}, {sessionId}, {snapshotFingerprint}, {skill}, {inputJson},
+                        {contractVersion}, {idempotencyKey}, {0}, {now}, {now}, {0}, {nullValue},
+                        {nullValue}, {nullValue}, {nullValue}, {1})
+                    """, TestContext.Current.CancellationToken);
+
+                await migrator.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+                var beforeBackfill = await context.WakeOutbox.AsNoTracking()
+                    .SingleAsync(item => item.Id == outboxId, TestContext.Current.CancellationToken);
+                Assert.Null(beforeBackfill.OpenClawTarget);
+            }
+
+            var store = new SonnetBridgeStore(new TestContextFactory(options));
+            await store.EnsureOpenClawTargetsAsync(
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [bindingId] = "sample-gateway"
+                },
+                new HashSet<string>(StringComparer.Ordinal) { "sample-gateway" },
+                TestContext.Current.CancellationToken);
+
+            await using var verificationContext = new BridgeDbContext(options);
+            var persisted = await verificationContext.WakeOutbox.AsNoTracking()
+                .SingleAsync(item => item.Id == outboxId, TestContext.Current.CancellationToken);
+            Assert.Equal("sample-gateway", persisted.OpenClawTarget);
         }
         finally
         {

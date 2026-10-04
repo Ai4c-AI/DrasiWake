@@ -272,5 +272,11 @@ public sealed class SnapshotReconcilerTests
 
         public ValueTask<RecoveryState> LoadRecoveryStateAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(State);
+
+        public ValueTask EnsureOpenClawTargetsAsync(
+            IReadOnlyDictionary<string, string> targetByBindingId,
+            IReadOnlySet<string> configuredTargetNames,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
     }
 }

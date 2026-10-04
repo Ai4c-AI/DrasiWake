@@ -188,5 +188,11 @@ public sealed class RecoveryCoordinatorTests
                 items.Where(item => item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled).ToArray(),
                 []));
         }
+
+        public ValueTask EnsureOpenClawTargetsAsync(
+            IReadOnlyDictionary<string, string> targetByBindingId,
+            IReadOnlySet<string> configuredTargetNames,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
     }
 }
