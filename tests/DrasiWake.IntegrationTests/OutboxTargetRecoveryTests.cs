@@ -87,6 +87,67 @@ public sealed class OutboxTargetRecoveryTests
     }
 
     [Fact]
+    public async Task Active_row_on_previous_target_fails_when_retention_is_shorter_than_binding_retry_age()
+    {
+        var (root, host) = CreateHost(new Dictionary<string, string?>
+        {
+            ["DrasiWake:OpenClaw:Targets:previous-gateway:BaseAddress"] = "http://127.0.0.1:8082",
+            ["DrasiWake:OpenClaw:Targets:previous-gateway:GatewayIdempotencyRetention"] = "01:00:00"
+        });
+        try
+        {
+            var outboxId = Guid.NewGuid();
+            await SeedWakeAsync(host, CreateWake(
+                outboxId,
+                BindingId,
+                "previous-gateway",
+                WakeOutboxStatus.RetryScheduled));
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => host.Services.GetRequiredService<HostStartupValidator>()
+                    .StartAsync(TestContext.Current.CancellationToken));
+
+            Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
+            Assert.Contains("previous-gateway", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("retention", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Active_row_with_whitespace_target_fails_instead_of_being_backfilled()
+    {
+        const string whitespaceTarget = "  \t";
+        var (root, host) = CreateHost();
+        try
+        {
+            var outboxId = Guid.NewGuid();
+            await SeedWakeAsync(host, CreateWake(
+                outboxId,
+                BindingId,
+                whitespaceTarget,
+                WakeOutboxStatus.Pending));
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => host.Services.GetRequiredService<HostStartupValidator>()
+                    .StartAsync(TestContext.Current.CancellationToken));
+
+            Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
+            var persisted = await LoadWakeAsync(host, outboxId);
+            Assert.Equal(whitespaceTarget, persisted.OpenClawTarget);
+        }
+        finally
+        {
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Completed_row_without_target_does_not_block_startup()
     {
         var (root, host) = CreateHost();
@@ -108,25 +169,33 @@ public sealed class OutboxTargetRecoveryTests
         }
     }
 
-    private static (string Root, IHost Host) CreateHost()
+    private static (string Root, IHost Host) CreateHost(
+        IReadOnlyDictionary<string, string?>? additionalConfiguration = null)
     {
         var root = Path.Combine(Path.GetTempPath(), $"DrasiWake-target-recovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var repositoryRoot = RepositoryRootLocator.Find(AppContext.BaseDirectory);
+        var settings = new Dictionary<string, string?>
+        {
+            ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:8081",
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
+            ["DrasiWake:Database:Path"] = Path.Combine(root, "database"),
+            ["DrasiWake:Registry:Path"] = Path.Combine(
+                repositoryRoot,
+                "src",
+                "DrasiWake.Host",
+                "contracts",
+                "sample-binding.yaml")
+        };
+        if (additionalConfiguration is not null)
+        {
+            foreach (var (key, value) in additionalConfiguration)
+                settings[key] = value;
+        }
+
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
-                ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:8081",
-                ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
-                ["DrasiWake:Database:Path"] = Path.Combine(root, "database"),
-                ["DrasiWake:Registry:Path"] = Path.Combine(
-                    repositoryRoot,
-                    "src",
-                    "DrasiWake.Host",
-                    "contracts",
-                    "sample-binding.yaml")
-            })
+            .AddInMemoryCollection(settings)
             .Build();
         return (root, DrasiWakeHostBuilder.CreateHost(configuration));
     }

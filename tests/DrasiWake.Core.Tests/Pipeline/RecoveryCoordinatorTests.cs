@@ -192,6 +192,8 @@ public sealed class RecoveryCoordinatorTests
         public ValueTask EnsureOpenClawTargetsAsync(
             IReadOnlyDictionary<string, string> targetByBindingId,
             IReadOnlySet<string> configuredTargetNames,
+            IReadOnlyDictionary<string, TimeSpan> maximumRetryAgeByBindingId,
+            IReadOnlyDictionary<string, TimeSpan> idempotencyRetentionByTarget,
             CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
     }

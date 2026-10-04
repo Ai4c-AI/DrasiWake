@@ -21,7 +21,7 @@ public sealed class TargetRoutedWakeSinkTests
             ["alpha"] = alphaHandler,
             ["beta"] = betaHandler
         });
-        using var sink = CreateSink(factory);
+        var sink = CreateSink(factory);
         var alphaRequest = CreateRequest("alpha");
         var betaRequest = CreateRequest("beta");
 
@@ -54,14 +54,15 @@ public sealed class TargetRoutedWakeSinkTests
         });
         Assert.DoesNotContain(alphaHandler.Requests, request => request.Authorization == "Bearer beta-secret");
         Assert.DoesNotContain(betaHandler.Requests, request => request.Authorization == "Bearer alpha-secret");
-        Assert.Equal(new[] { "alpha", "beta" }, factory.CreatedNames.Order(StringComparer.Ordinal));
+        Assert.Equal(2, factory.CreatedNames.Count(name => name == "alpha"));
+        Assert.Equal(2, factory.CreatedNames.Count(name => name == "beta"));
     }
 
     [Fact]
     public async Task Unknown_target_fails_without_creating_an_http_client()
     {
         var factory = new RecordingHttpClientFactory(new Dictionary<string, HttpMessageHandler>(StringComparer.Ordinal));
-        using var sink = CreateSink(factory);
+        var sink = CreateSink(factory);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => sink.InvokeAsync(CreateRequest("missing"), CancellationToken.None).AsTask());

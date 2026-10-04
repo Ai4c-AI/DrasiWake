@@ -172,6 +172,14 @@ public sealed class AtomicAcceptanceTests
                     [bindingId] = "sample-gateway"
                 },
                 new HashSet<string>(StringComparer.Ordinal) { "sample-gateway" },
+                new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
+                {
+                    [bindingId] = TimeSpan.FromDays(1)
+                },
+                new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
+                {
+                    ["sample-gateway"] = TimeSpan.FromDays(30)
+                },
                 TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);

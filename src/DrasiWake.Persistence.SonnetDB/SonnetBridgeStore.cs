@@ -301,10 +301,14 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
     public async ValueTask EnsureOpenClawTargetsAsync(
         IReadOnlyDictionary<string, string> targetByBindingId,
         IReadOnlySet<string> configuredTargetNames,
+        IReadOnlyDictionary<string, TimeSpan> maximumRetryAgeByBindingId,
+        IReadOnlyDictionary<string, TimeSpan> idempotencyRetentionByTarget,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetByBindingId);
         ArgumentNullException.ThrowIfNull(configuredTargetNames);
+        ArgumentNullException.ThrowIfNull(maximumRetryAgeByBindingId);
+        ArgumentNullException.ThrowIfNull(idempotencyRetentionByTarget);
 
         await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
@@ -321,7 +325,8 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         var changed = false;
         foreach (var item in activeItems)
         {
-            if (string.IsNullOrWhiteSpace(item.OpenClawTarget))
+            var target = item.OpenClawTarget;
+            if (target is null)
             {
                 if (!targetByBindingId.TryGetValue(item.BindingId, out var bindingTarget) ||
                     string.IsNullOrWhiteSpace(bindingTarget))
@@ -330,15 +335,42 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
                         $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' has no configured binding target.");
                 }
 
-                item.OpenClawTarget = bindingTarget;
+                target = bindingTarget;
+                item.OpenClawTarget = target;
                 item.Version++;
                 changed = true;
             }
-
-            if (!configuredTargetNames.Contains(item.OpenClawTarget))
+            else if (string.IsNullOrWhiteSpace(target))
             {
                 throw new InvalidOperationException(
-                    $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' references unconfigured OpenClaw target '{item.OpenClawTarget}'.");
+                    $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' has an empty or whitespace OpenClaw target.");
+            }
+
+            if (!configuredTargetNames.Contains(target))
+            {
+                throw new InvalidOperationException(
+                    $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' references unconfigured OpenClaw target '{target}'.");
+            }
+
+            if (!idempotencyRetentionByTarget.TryGetValue(target, out var idempotencyRetention))
+            {
+                throw new InvalidOperationException(
+                    $"Active wake outbox item '{item.Id}' references OpenClaw target '{target}' without an idempotency retention policy.");
+            }
+
+            if (targetByBindingId.ContainsKey(item.BindingId))
+            {
+                if (!maximumRetryAgeByBindingId.TryGetValue(item.BindingId, out var maximumRetryAge))
+                {
+                    throw new InvalidOperationException(
+                        $"Active wake outbox item '{item.Id}' for current binding '{item.BindingId}' has no retry-age policy.");
+                }
+
+                if (idempotencyRetention < maximumRetryAge)
+                {
+                    throw new InvalidOperationException(
+                        $"Active wake outbox item '{item.Id}' for binding '{item.BindingId}' references OpenClaw target '{target}' whose idempotency retention does not cover the binding's maximum outbox retry age.");
+                }
             }
         }
 

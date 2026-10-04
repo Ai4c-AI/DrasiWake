@@ -71,7 +71,20 @@ public sealed class HostStartupValidator(
             binding => binding.OpenClawTarget,
             StringComparer.Ordinal);
         var configuredTargetNames = settings.OpenClawTargets.Keys.ToHashSet(StringComparer.Ordinal);
-        await store.EnsureOpenClawTargetsAsync(targetByBindingId, configuredTargetNames, cancellationToken);
+        var maximumRetryAgeByBindingId = candidate.Registry.Bindings.ToDictionary(
+            binding => binding.Id,
+            binding => binding.Retry.MaxAge,
+            StringComparer.Ordinal);
+        var idempotencyRetentionByTarget = settings.OpenClawTargets.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.GatewayIdempotencyRetention,
+            StringComparer.Ordinal);
+        await store.EnsureOpenClawTargetsAsync(
+            targetByBindingId,
+            configuredTargetNames,
+            maximumRetryAgeByBindingId,
+            idempotencyRetentionByTarget,
+            cancellationToken);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
