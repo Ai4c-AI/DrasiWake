@@ -8,6 +8,7 @@ namespace DrasiWake.Host;
 public sealed record DrasiWakeHostSettings(
     DrasiServerOptions Drasi,
     OpenClawOptions OpenClaw,
+    IReadOnlyDictionary<string, OpenClawTargetOptions> OpenClawTargets,
     string DatabasePath,
     string RegistryPath,
     int SignalCapacity,
@@ -27,6 +28,7 @@ public sealed record DrasiWakeHostSettings(
         var workerCount = ReadInt(configuration, "DrasiWake:WorkerCount", 4);
         var idempotencyRetention = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:IdempotencyRetention", TimeSpan.FromDays(30));
         var maximumRetryAge = ReadTimeSpan(configuration, "DrasiWake:Outbox:MaximumRetryAge", TimeSpan.FromDays(7));
+        var openClawTargets = ReadOpenClawTargets(configuration);
         var drasiOptions = new DrasiServerOptions(drasiUri)
         {
             SignalCapacity = signalCapacity,
@@ -47,6 +49,7 @@ public sealed record DrasiWakeHostSettings(
         return new DrasiWakeHostSettings(
             drasiOptions,
             openClawOptions,
+            openClawTargets,
             Path.GetFullPath(databasePath),
             Path.GetFullPath(registryPath),
             signalCapacity,
@@ -65,6 +68,8 @@ public sealed record DrasiWakeHostSettings(
             throw new InvalidOperationException("Drasi Server configuration is invalid.");
         }
         OpenClaw.Validate();
+        foreach (var (targetName, targetOptions) in OpenClawTargets)
+            targetOptions.Validate(targetName);
         ArgumentOutOfRangeException.ThrowIfLessThan(SignalCapacity, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(WorkerCount, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(DatabasePath);
@@ -90,6 +95,26 @@ public sealed record DrasiWakeHostSettings(
         return uri;
     }
 
+    private static IReadOnlyDictionary<string, OpenClawTargetOptions> ReadOpenClawTargets(
+        IConfiguration configuration)
+    {
+        var targets = new Dictionary<string, OpenClawTargetOptions>(StringComparer.Ordinal);
+        foreach (var section in configuration.GetSection("DrasiWake:OpenClaw:Targets").GetChildren())
+        {
+            var baseAddressKey = $"{section.Path}:BaseAddress";
+            var bearerTokenKey = $"{section.Path}:BearerToken";
+            var retentionKey = $"{section.Path}:GatewayIdempotencyRetention";
+            var targetOptions = new OpenClawTargetOptions(
+                ReadUri(configuration, baseAddressKey),
+                configuration[bearerTokenKey],
+                ReadRequiredTimeSpan(configuration, retentionKey));
+            targetOptions.Validate(section.Key);
+            targets.Add(section.Key, targetOptions);
+        }
+
+        return targets;
+    }
+
     private static int ReadInt(IConfiguration configuration, string key, int defaultValue)
     {
         if (configuration[key] is not { } value)
@@ -103,6 +128,14 @@ public sealed record DrasiWakeHostSettings(
     {
         if (configuration[key] is not { } value)
             return defaultValue;
+        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        throw new InvalidOperationException($"Configuration '{key}' must be a valid time interval.");
+    }
+
+    private static TimeSpan ReadRequiredTimeSpan(IConfiguration configuration, string key)
+    {
+        var value = ReadRequired(configuration, key);
         if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
             return parsed;
         throw new InvalidOperationException($"Configuration '{key}' must be a valid time interval.");

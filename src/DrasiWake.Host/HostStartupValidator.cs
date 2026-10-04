@@ -22,10 +22,29 @@ public sealed class HostStartupValidator(
             throw new InvalidOperationException($"Contract registry is invalid: {errors}");
         }
 
-        var maximumBindingRetryAge = candidate.Registry.Bindings.Max(binding => binding.Retry.MaxAge);
-        if (settings.OpenClaw.GatewayIdempotencyRetention < maximumBindingRetryAge)
+        var maximumRetryAgeByTarget = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+        foreach (var binding in candidate.Registry.Bindings)
         {
-            throw new InvalidOperationException("Gateway idempotency retention must cover every binding's maximum outbox retry age.");
+            if (!settings.OpenClawTargets.TryGetValue(binding.OpenClawTarget, out var target))
+            {
+                throw new InvalidOperationException(
+                    $"Binding '{binding.Id}' references unknown OpenClaw target '{binding.OpenClawTarget}'.");
+            }
+
+            if (!maximumRetryAgeByTarget.TryGetValue(binding.OpenClawTarget, out var maximumRetryAge) ||
+                binding.Retry.MaxAge > maximumRetryAge)
+            {
+                maximumRetryAgeByTarget[binding.OpenClawTarget] = binding.Retry.MaxAge;
+            }
+        }
+
+        foreach (var (targetName, maximumRetryAge) in maximumRetryAgeByTarget)
+        {
+            if (settings.OpenClawTargets[targetName].GatewayIdempotencyRetention < maximumRetryAge)
+            {
+                throw new InvalidOperationException(
+                    $"OpenClaw target '{targetName}' idempotency retention must cover its bindings' maximum outbox retry age.");
+            }
         }
 
         if (!registryManager.TryActivate(candidate))

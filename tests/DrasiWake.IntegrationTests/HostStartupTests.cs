@@ -41,6 +41,128 @@ public sealed class HostStartupTests
     }
 
     [Fact]
+    public void Named_gateway_target_settings_bind_by_logical_name()
+    {
+        var configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:OpenClaw:Targets:sensor-gateway:BaseAddress"] = "https://sensor-gateway.test/",
+            ["DrasiWake:OpenClaw:Targets:sensor-gateway:BearerToken"] = "sensor-token",
+            ["DrasiWake:OpenClaw:Targets:sensor-gateway:GatewayIdempotencyRetention"] = "15.00:00:00"
+        });
+
+        var settings = DrasiWakeHostSettings.FromConfiguration(configuration);
+        var targetsProperty = settings.GetType().GetProperty("OpenClawTargets");
+        Assert.NotNull(targetsProperty);
+        var targets = Assert.IsAssignableFrom<System.Collections.IDictionary>(targetsProperty.GetValue(settings));
+        var target = targets["sensor-gateway"];
+        Assert.NotNull(target);
+        var targetType = target.GetType();
+        Assert.Equal(
+            new Uri("https://sensor-gateway.test/"),
+            targetType.GetProperty("BaseAddress")!.GetValue(target));
+        Assert.Equal("sensor-token", targetType.GetProperty("BearerToken")!.GetValue(target));
+        Assert.Equal(
+            TimeSpan.FromDays(15),
+            targetType.GetProperty("GatewayIdempotencyRetention")!.GetValue(target));
+    }
+
+    [Theory]
+    [InlineData("ftp://gateway.test/")]
+    [InlineData("/relative")]
+    public void Invalid_named_target_address_is_rejected(string address)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = address
+            })));
+
+        Assert.Contains("DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Malformed_named_target_credential_is_rejected_without_echoing_secret()
+    {
+        const string token = "token with spaces";
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:OpenClaw:Targets:sample-gateway:BearerToken"] = token
+            })));
+
+        Assert.Contains("BearerToken", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(token, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Named_target_requires_idempotency_retention_configuration()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = null
+            })));
+
+        Assert.Contains("GatewayIdempotencyRetention", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Binding_with_unknown_target_fails_host_startup()
+    {
+        var (root, registryPath) = await CreateSampleRegistryWithTargetAsync("missing-gateway");
+        var databasePath = Path.Combine(root, "database");
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = registryPath,
+            ["DrasiWake:Database:Path"] = databasePath
+        }));
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => host.Services.GetRequiredService<HostStartupValidator>()
+                    .StartAsync(TestContext.Current.CancellationToken));
+
+            Assert.Contains("missing-gateway", exception.Message, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(databasePath));
+        }
+        finally
+        {
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Target_retention_shorter_than_binding_retry_age_fails_host_startup()
+    {
+        var (root, registryPath) = await CreateSampleRegistryWithTargetAsync("sample-gateway");
+        var databasePath = Path.Combine(root, "database");
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = registryPath,
+            ["DrasiWake:Database:Path"] = databasePath,
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "01:00:00"
+        }));
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => host.Services.GetRequiredService<HostStartupValidator>()
+                    .StartAsync(TestContext.Current.CancellationToken));
+
+            Assert.Contains("sample-gateway", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("retention", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False(Directory.Exists(databasePath));
+        }
+        finally
+        {
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Aspire_sensor_binding_matches_fixture_and_accepts_sensor_rows()
     {
         var repositoryRoot = RepositoryRootLocator.Find(AppContext.BaseDirectory);
@@ -151,6 +273,8 @@ public sealed class HostStartupTests
         {
             ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
             ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:8081",
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:8081",
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
             ["DrasiWake:Database:Path"] = Path.Combine(Path.GetTempPath(), $"DrasiWake-test-{Guid.NewGuid():N}"),
             ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml"),
             ["DrasiWake:OpenClaw:IdempotencyRetention"] = "30.00:00:00",
@@ -159,6 +283,20 @@ public sealed class HostStartupTests
         foreach (var entry in overrides)
             values[entry.Key] = entry.Value;
         return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+    }
+
+    private static async Task<(string Root, string RegistryPath)> CreateSampleRegistryWithTargetAsync(string target)
+    {
+        var repositoryRoot = RepositoryRootLocator.Find(AppContext.BaseDirectory);
+        var sourceDirectory = Path.Combine(repositoryRoot, "src", "DrasiWake.Host", "contracts");
+        var root = Path.Combine(Path.GetTempPath(), $"DrasiWake-target-startup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var registryPath = Path.Combine(root, "bindings.yaml");
+        var yaml = await File.ReadAllTextAsync(Path.Combine(sourceDirectory, "sample-binding.yaml"), TestContext.Current.CancellationToken);
+        yaml = yaml.Replace("openClawTarget: sample-gateway", $"openClawTarget: {target}", StringComparison.Ordinal);
+        await File.WriteAllTextAsync(registryPath, yaml, TestContext.Current.CancellationToken);
+        File.Copy(Path.Combine(sourceDirectory, "sample-facts.schema.json"), Path.Combine(root, "sample-facts.schema.json"));
+        return (root, registryPath);
     }
 
     private static readonly string SampleRegistry = string.Join(Environment.NewLine,
