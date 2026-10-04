@@ -144,6 +144,7 @@ public sealed class SnapshotReconcilerTests
         "singleton",
         null,
         null,
+        "sample-gateway",
         "triage-order",
         new BridgeContract(
             "1.0.0",

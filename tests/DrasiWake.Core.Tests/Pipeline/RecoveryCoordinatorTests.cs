@@ -93,7 +93,7 @@ public sealed class RecoveryCoordinatorTests
     {
         var binding = new BridgeBinding(
             "orders-binding", "drasi-server", query.Server, query.InstanceId, query.QueryId,
-            "converge-latest", "singleton", null, null, "triage-order",
+            "converge-latest", "singleton", null, null, "sample-gateway", "triage-order",
             new BridgeContract("1.0.0", Path.Combine(AppContext.BaseDirectory, "Contracts", "Fixtures", "order.schema.json")),
             32768, [], new RetryPolicy(3, TimeSpan.FromDays(1)),
             new RateLimitPolicy(10, TimeSpan.FromSeconds(1)));

@@ -229,7 +229,7 @@ public sealed class SessionPartitionerTests
     {
         var binding = new BridgeBinding(
             "binding-1", "drasi-server", new Uri("http://drasi.test"), null, "orders",
-            "converge-latest", "singleton", null, null, "triage-order",
+            "converge-latest", "singleton", null, null, "sample-gateway", "triage-order",
             new BridgeContract("1.0.0", "order.schema.json"), 32768, [],
             new RetryPolicy(3, TimeSpan.FromDays(1)),
             rateLimit ?? new RateLimitPolicy(10, TimeSpan.FromHours(1)));

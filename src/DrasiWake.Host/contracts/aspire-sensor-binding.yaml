@@ -7,6 +7,7 @@ bindings:
     queryId: sensor-readings
     deliveryMode: converge-latest
     sessionScope: per-query
+    openClawTarget: sensor-gateway
     metaSkill: drasiwake-sensor-reading-summary
     contractVersion: 1.0.0
     factSchemaPath: aspire-sensor-reading.schema.json

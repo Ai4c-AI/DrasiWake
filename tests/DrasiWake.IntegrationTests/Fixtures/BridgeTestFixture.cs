@@ -167,6 +167,7 @@ internal sealed class BridgeTestFixture : IAsyncDisposable
         "    queryId: orders",
         "    deliveryMode: converge-latest",
         "    sessionScope: singleton",
+        "    openClawTarget: sample-gateway",
         "    metaSkill: triage-order",
         "    contractVersion: 1.0.0",
         "    factSchemaPath: facts.schema.json",

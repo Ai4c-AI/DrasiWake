@@ -7,6 +7,7 @@ bindings:
     deliveryMode: converge-latest
     sessionScope: per-query
     aggregateKeyPointer: /orderId
+    openClawTarget: sample-gateway
     metaSkill: triage-order
     contractVersion: 1.0.0
     factSchemaPath: order.schema.json
@@ -26,6 +27,7 @@ bindings:
     deliveryMode: converge-latest
     sessionScope: per-query
     aggregateKeyPointer: /shipmentId
+    openClawTarget: sample-gateway
     metaSkill: triage-shipment
     contractVersion: 1.0.0
     factSchemaPath: order.schema.json

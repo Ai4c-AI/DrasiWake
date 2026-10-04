@@ -112,6 +112,7 @@ public sealed class OutboxDispatcherTests
         "singleton",
         null,
         null,
+        "sample-gateway",
         "triage-order",
         new BridgeContract("1.0.0", "order.schema.json"),
         32_768,

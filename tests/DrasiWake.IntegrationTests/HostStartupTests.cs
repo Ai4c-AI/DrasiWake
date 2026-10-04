@@ -172,6 +172,7 @@ public sealed class HostStartupTests
         "    queryId: orders",
         "    deliveryMode: converge-latest",
         "    sessionScope: singleton",
+        "    openClawTarget: sample-gateway",
         "    metaSkill: triage-order",
         "    contractVersion: 1.0.0",
         "    factSchemaPath: facts.schema.json",

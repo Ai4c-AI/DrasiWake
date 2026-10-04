@@ -6,6 +6,7 @@ bindings:
     deliveryMode: converge-latest
     sessionScope: per-query
     aggregateKeyPointer: /orderId
+    openClawTarget: sample-gateway
     metaSkill: triage-order
     factSchemaPath: order.schema.json
     maxPayloadBytes: 32768

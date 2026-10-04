@@ -99,6 +99,8 @@ public sealed class ContractRegistryLoader
             AddError("identity.pointer_invalid", "Aggregate key must be a valid RFC 6901 JSON Pointer.");
         }
 
+        if (string.IsNullOrWhiteSpace(item.OpenClawTarget))
+            AddError("routing.target_required", "OpenClaw target name is required.");
         if (string.IsNullOrWhiteSpace(item.MetaSkill)) AddError("routing.skill_required", "MetaSkill name is required.");
         if (item.MaxPayloadBytes <= 0) AddError("payload.limit_invalid", "Maximum payload size must be positive.");
         if (item.Retry is null || item.Retry.MaxAttempts <= 0 || item.Retry.MaxAgeSeconds <= 0)
@@ -155,6 +157,7 @@ public sealed class ContractRegistryLoader
             item.SessionScope ?? "per-query",
             item.AggregateKeyPointer,
             canonicalIdentity,
+            item.OpenClawTarget!.Trim(),
             item.MetaSkill!,
             new BridgeContract(item.ContractVersion ?? "1.0.0", resolvedSchemaPath!),
             item.MaxPayloadBytes,
@@ -250,6 +253,7 @@ public sealed class ContractRegistryLoader
         public string? SessionScope { get; set; }
         public string? AggregateKeyPointer { get; set; }
         public CanonicalIdentityDocument? CanonicalIdentity { get; set; }
+        public string? OpenClawTarget { get; set; }
         public string? MetaSkill { get; set; }
         public string? ContractVersion { get; set; }
         public string? FactSchemaPath { get; set; }

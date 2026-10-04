@@ -19,6 +19,7 @@ public sealed record BridgeBinding(
     string SessionScope,
     string? AggregateKeyPointer,
     CanonicalIdentityDefinition? CanonicalIdentity,
+    string OpenClawTarget,
     string MetaSkill,
     BridgeContract Contract,
     int MaxPayloadBytes,
