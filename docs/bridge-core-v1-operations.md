@@ -17,13 +17,15 @@ V1 要求每个 SonnetDB 目录只能由一个活动 Host 持有。目录所有�
 | 配置项 | 环境变量示例 | 说明 |
 | --- | --- | --- |
 | Drasi 服务器 | `DrasiWake__Drasi__ServerUri` | 绝对 HTTP 或 HTTPS URL。 |
-| OpenClaw Gateway | `DrasiWake__OpenClaw__BaseAddress` | 专用集成端点的服务基础 URL。 |
-| Gateway 凭据 | `DrasiWake__OpenClaw__BearerToken` | 通过环境变量或密钥提供程序传入；切勿提交到版本库。 |
+| Gateway URL | `DrasiWake__OpenClaw__Targets__<target>__BaseAddress` | 每个命名目标一个专用集成端点的服务基础 URL。 |
+| Gateway 凭据 | `DrasiWake__OpenClaw__Targets__<target>__BearerToken` | 目标专属可选凭据；通过环境变量或密钥提供程序传入，切勿提交到版本库。 |
+| Gateway 幂等保留时间 | `DrasiWake__OpenClaw__Targets__<target>__GatewayIdempotencyRetention` | 每个目标的保留时长必须覆盖注册表中引用该目标的所有绑定的最大 `retry.maxAgeSeconds`。 |
 | SonnetDB 目录 | `DrasiWake__Database__Path` | 每个目录只能由一个活动 Host 持有。 |
 | 绑定注册表 | `DrasiWake__Registry__Path` | YAML 注册表路径。 |
-| 最大重试时长 | `DrasiWake__Outbox__MaximumRetryAge` | Gateway 幂等记录的保留时间不得短于此值，也必须覆盖所有绑定的重试时长。 |
 | 信号队列容量 | `DrasiWake__ChannelCapacity` | 有界内存提示队列；队列溢出时会将查询标记为待对账。 |
 | Worker 数量 | `DrasiWake__WorkerCount` | 并发会话 Worker 的最大数量。 |
+
+每个注册表绑定都必须包含 `openClawTarget`，且其值必须与配置的目标名称完全匹配。Host 启动时会逐目标验证幂等保留时长。目标凭据仅属于对应目标，建议由环境变量、User Secrets 或部署 secret provider 注入。
 
 请在 Host 项目目录中运行，以便正确发现 `appsettings.json`，并按示例解析数据库和注册表的相对路径：
 
@@ -33,7 +35,7 @@ dotnet run
 Pop-Location
 ```
 
-启动时会校验配置和完整注册表、检查 Gateway 幂等记录保留时间、获取数据库目录所有权，并在启动 Drasi 接收器前应用 EF migration。配置无效或目录已被其他活动实例持有时，Host 将无法启动。
+启动时会校验配置和完整注册表、检查每个目标的 Gateway 幂等记录保留时间、获取数据库目录所有权，并在启动 Drasi 接收器前应用 EF migration。迁移后，Host 会从当前注册表绑定回填尚未结束且缺少目标的旧 outbox 记录；若记录的绑定已不存在，或活动记录仍引用未配置的目标，Host 将拒绝启动。移除仍被活动 outbox 工作引用的目标前，应先处理这些记录；已完成、死信或已取代的历史记录不阻止移除目标。
 
 ## 恢复与状态
 

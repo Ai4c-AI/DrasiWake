@@ -98,8 +98,9 @@ Compose 已定义健康检查：Drasi Server 的 HTTP `/health` 检查及 Postgr
 使用 `docker compose port` 的结果构造可由宿主机运行的 URI，并注入 Host 既有设置：
 
 - `DrasiWake:Drasi:ServerUri`
-- `DrasiWake:OpenClaw:BaseAddress`
-- `DrasiWake:OpenClaw:BearerToken`
+- `DrasiWake:OpenClaw:Targets:sensor-gateway:BaseAddress`
+- `DrasiWake:OpenClaw:Targets:sensor-gateway:BearerToken`
+- `DrasiWake:OpenClaw:Targets:sensor-gateway:GatewayIdempotencyRetention`
 
 通配绑定地址应归一化为宿主机可连接的回环地址；具体地址解析规则及错误处理纳入自动化测试。若端口查询失败或结果含糊，Host 不启动，并清理本次启动的栈。AppHost 不从 Drasi `.env` 推导地址；Compose 自身照常按项目语义加载该文件。
 
@@ -120,7 +121,7 @@ AppHost 先停止 DrasiWake Host，再对本次生命周期启动的 Compose 栈
 
 路径配置使用 AppHost 标准配置提供程序，可由 User Secrets、环境变量或本地开发配置覆盖。相对路径统一相对于 DrasiWake 仓库根目录解析，不依赖启动时的当前工作目录。路径缺省时使用上述同级目录默认值。
 
-密钥由 AppHost User Secrets 或环境变量提供。协调器只将两个必需值作为子进程环境变量交给 OpenClaw Compose 调用；不将其拼入命令行参数、资源显示名、日志或错误文本。`MODEL_PROVIDER_KEY` 只传给 OpenClaw Compose；`OPENCLAW_AUTH_TOKEN` 同时用于 Gateway 容器与 Host 的 `DrasiWake:OpenClaw:BearerToken`。AppHost 不调用会把解析后完整 Compose 配置（含环境变量值）打印到日志的命令。
+密钥由 AppHost User Secrets 或环境变量提供。协调器只将两个必需值作为子进程环境变量交给 OpenClaw Compose 调用；不将其拼入命令行参数、资源显示名、日志或错误文本。`MODEL_PROVIDER_KEY` 只传给 OpenClaw Compose；`OPENCLAW_AUTH_TOKEN` 同时用于 Gateway 容器与 Host 的 `DrasiWake:OpenClaw:Targets:sensor-gateway:BearerToken`。AppHost 将发现的 Gateway URL 与该目标的幂等保留时长一起注入 Host。AppHost 不调用会把解析后完整 Compose 配置（含环境变量值）打印到日志的命令。
 
 ## 6. 冲突与故障处理
 

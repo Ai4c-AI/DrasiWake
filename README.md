@@ -11,7 +11,7 @@ dotnet run --project src/DrasiWake.AppHost/DrasiWake.AppHost.csproj
 
 ## 启动 Bridge
 
-独立的 .NET 10 Host 默认读取 `src/DrasiWake.Host/appsettings.json`，并使用 `src/DrasiWake.Host/contracts/sample-binding.yaml` 中的绑定注册表。请通过环境变量或密钥提供程序设置 `DrasiWake__OpenClaw__BearerToken`；不要将凭据写入 appsettings 或注册表。
+独立的 .NET 10 Host 默认读取 `src/DrasiWake.Host/appsettings.json`，并使用 `src/DrasiWake.Host/contracts/sample-binding.yaml` 中的绑定注册表。每个绑定都必须通过 `openClawTarget` 指向一个已配置的 Gateway；凭据应通过对应目标的环境变量或密钥提供程序（例如 `DrasiWake__OpenClaw__Targets__sample-gateway__BearerToken`）提供，不要将凭据写入 appsettings 或注册表。
 
 在仓库根目录运行以下命令启动 Host：
 

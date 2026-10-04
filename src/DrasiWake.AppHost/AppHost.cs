@@ -35,15 +35,17 @@ builder.AddProject<Projects.DrasiWake_Host>("drasiwake-host")
 		context.EnvironmentVariables["DrasiWake__Drasi__ServerUri"] =
 			environmentState.DrasiServerUri?.ToString()
 			?? throw new InvalidOperationException("Drasi address was not discovered before Host startup.");
-		context.EnvironmentVariables["DrasiWake__OpenClaw__BaseAddress"] =
+		context.EnvironmentVariables["DrasiWake__OpenClaw__Targets__sensor-gateway__BaseAddress"] =
 			environmentState.OpenClawBaseAddress?.ToString()
 			?? throw new InvalidOperationException("OpenClaw address was not discovered before Host startup.");
+		context.EnvironmentVariables["DrasiWake__OpenClaw__Targets__sensor-gateway__GatewayIdempotencyRetention"] =
+			"30.00:00:00";
 		if (options.AspireRegistryPathOverride is { } registryPath)
 		{
 			context.EnvironmentVariables["DrasiWake__Registry__Path"] = registryPath;
 		}
 	})
-	.WithEnvironment("DrasiWake__OpenClaw__BearerToken", authToken);
+	.WithEnvironment("DrasiWake__OpenClaw__Targets__sensor-gateway__BearerToken", authToken);
 
 await using var app = builder.Build();
 var composeRuntime = app.Services.GetRequiredService<IComposeEnvironmentRuntime>();

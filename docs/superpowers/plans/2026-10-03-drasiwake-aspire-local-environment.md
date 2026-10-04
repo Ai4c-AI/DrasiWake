@@ -142,7 +142,7 @@
 1. After both stacks are healthy, query Drasi service `drasi-server` port `8080` and OpenClaw service `openclaw` port `18789` with `docker compose port` from their respective project directories.
 2. Parse exactly one valid host/port mapping for each service. Normalize wildcard bind hosts (`0.0.0.0`, `::`, or equivalent) to a host-reachable loopback address. Reject missing, malformed, ambiguous, or invalid port results; do not guess defaults.
 3. Construct the Drasi and OpenClaw base URIs from discovered values.
-4. Inject `DrasiWake:Drasi:ServerUri`, `DrasiWake:OpenClaw:BaseAddress`, and `DrasiWake:OpenClaw:BearerToken` into the Host project resource using Aspire's supported configuration/environment API. Ensure the Host starts only after both Compose resources report ready and address discovery succeeds.
+4. Inject `DrasiWake:Drasi:ServerUri` and the discovered Gateway URL and secret under `DrasiWake:OpenClaw:Targets:sensor-gateway`, with an explicit idempotency retention value, into the Host project resource using Aspire's supported configuration/environment API. Ensure the Host starts only after both Compose resources report ready and address discovery succeeds.
 5. Preserve `DrasiWakeHostBuilder.CreateHost(IConfiguration)` and existing production configuration behavior; do not add Aspire dependencies to `DrasiWake.Host`.
 
 **Tests:**

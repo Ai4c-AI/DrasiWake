@@ -49,7 +49,7 @@ $env:DrasiWake__DevEnvironment__DrasiRepositoryPath = 'E:\GitHub\drasi-server'
 $env:DrasiWake__DevEnvironment__OpenClawRepositoryPath = 'E:\GitHub\openclaw.net'
 ```
 
-AppHost 在启动 Host 前会检查配置、Compose 文件、Docker daemon、`--wait` 能力、固定容器名和 Compose YAML 声明的默认宿主机端口；随后并行启动两个栈并等待 Compose 健康检查通过。它用 `docker compose port` 发现实际发布地址，再注入 `DrasiWake:Drasi:ServerUri`、`DrasiWake:OpenClaw:BaseAddress` 和 `DrasiWake:OpenClaw:BearerToken`。
+AppHost 在启动 Host 前会检查配置、Compose 文件、Docker daemon、`--wait` 能力、固定容器名和 Compose YAML 声明的默认宿主机端口；随后并行启动两个栈并等待 Compose 健康检查通过。它用 `docker compose port` 发现实际发布地址，再注入 `DrasiWake:Drasi:ServerUri`，以及 `DrasiWake:OpenClaw:Targets:sensor-gateway:*` 下的 Gateway 地址、Bearer token 和 `30.00:00:00` 幂等保留时长。token 通过 Aspire secret parameter 传入，不写入配置文件或命令行。
 
 默认情况下 Host 继续加载通用 `contracts/sample-binding.yaml`。只有显式设置 `DrasiWake__DevEnvironment__EnableAspireEndToEnd=true`，AppHost 才会将 Host registry 覆盖为 `contracts/aspire-sensor-binding.yaml`；该 binding 对应 fixture 的 `drasiwake-sensor-monitor` / `sensor-readings`、`SensorId` / `Temperature` / `Humidity` 和 `drasiwake-sensor-reading-summary`。fixture 每 3 秒生成一次传感器更新，启用此模式并配置真实模型提供方时可能持续产生模型调用和费用。普通启动及三个独立的真实服务 contract 测试开关都不会启用此模式。
 
