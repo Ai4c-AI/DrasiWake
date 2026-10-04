@@ -111,15 +111,14 @@ public sealed class RealGatewayContractTests
         var maximumRetryAge = TimeSpan.Parse(
             Environment.GetEnvironmentVariable("DRASIWAKE_REAL_MAX_OUTBOX_RETRY_AGE") ?? "7.00:00:00",
             System.Globalization.CultureInfo.InvariantCulture);
+        Assert.True(retention >= maximumRetryAge);
         var options = new OpenClawOptions
         {
-            BaseAddress = baseAddress,
-            BearerToken = token,
-            MaxRetryAttempts = 0,
-            GatewayIdempotencyRetention = retention,
-            MaximumOutboxRetryAge = maximumRetryAge
+            MaxRetryAttempts = 0
         };
         options.Validate();
+        var targetOptions = new OpenClawTargetOptions(baseAddress, token, retention);
+        targetOptions.Validate("sensor-gateway");
 
         using var httpClient = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromMinutes(2) };
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -133,7 +132,7 @@ public sealed class RealGatewayContractTests
         var sessionResponseBody = await sessionResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains($"\"sessionId\":\"{sessionId}\"", sessionResponseBody, StringComparison.Ordinal);
 
-        var client = new OpenClawMetaInvocationClient(httpClient, options);
+        using var client = new OpenClawMetaInvocationClient(httpClient, options, targetOptions);
         var request = new WakeRequest(
             "real-contract-test",
             sessionId,
@@ -155,7 +154,6 @@ public sealed class RealGatewayContractTests
             client.InvokeAsync(request, TestContext.Current.CancellationToken).AsTask());
 
         Assert.Equal(acceptances[0].InvocationId, acceptances[1].InvocationId);
-        Assert.True(retention >= maximumRetryAge);
         Console.WriteLine($"Gateway contract evidence: build={gatewayBuild}; idempotencyRetention={retention}; maximumRetryAge={maximumRetryAge}; invocation={acceptances[0].InvocationId}");
     }
 

@@ -5,13 +5,9 @@ namespace DrasiWake.Adapters.OpenClaw.Tests;
 public sealed class OpenClawOptionsTests
 {
     [Fact]
-    public void Rejects_gateway_retention_shorter_than_outbox_retry_age()
+    public void Rejects_negative_retry_attempts()
     {
-        var options = new OpenClawOptions
-        {
-            GatewayIdempotencyRetention = TimeSpan.FromDays(6),
-            MaximumOutboxRetryAge = TimeSpan.FromDays(7)
-        };
+        var options = new OpenClawOptions { MaxRetryAttempts = -1 };
 
         Assert.Throws<InvalidOperationException>(options.Validate);
     }

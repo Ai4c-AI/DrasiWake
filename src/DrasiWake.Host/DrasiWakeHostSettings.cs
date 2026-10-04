@@ -21,13 +21,10 @@ public sealed record DrasiWakeHostSettings(
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var drasiUri = ReadUri(configuration, "DrasiWake:Drasi:ServerUri");
-        var openClawUri = ReadUri(configuration, "DrasiWake:OpenClaw:BaseAddress");
         var databasePath = ReadRequired(configuration, "DrasiWake:Database:Path");
         var registryPath = ReadRequired(configuration, "DrasiWake:Registry:Path");
         var signalCapacity = ReadInt(configuration, "DrasiWake:ChannelCapacity", 256);
         var workerCount = ReadInt(configuration, "DrasiWake:WorkerCount", 4);
-        var idempotencyRetention = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:IdempotencyRetention", TimeSpan.FromDays(30));
-        var maximumRetryAge = ReadTimeSpan(configuration, "DrasiWake:Outbox:MaximumRetryAge", TimeSpan.FromDays(7));
         var openClawTargets = ReadOpenClawTargets(configuration);
         var drasiOptions = new DrasiServerOptions(drasiUri)
         {
@@ -37,13 +34,9 @@ public sealed record DrasiWakeHostSettings(
         };
         var openClawOptions = new OpenClawOptions
         {
-            BaseAddress = openClawUri,
-            BearerToken = configuration["DrasiWake:OpenClaw:BearerToken"],
             MaxRetryAttempts = ReadInt(configuration, "DrasiWake:OpenClaw:MaxRetryAttempts", 3),
             RetryBaseDelay = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:RetryBaseDelay", TimeSpan.FromMilliseconds(200)),
-            MaxRetryDelay = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:MaxRetryDelay", TimeSpan.FromSeconds(5)),
-            GatewayIdempotencyRetention = idempotencyRetention,
-            MaximumOutboxRetryAge = maximumRetryAge
+            MaxRetryDelay = ReadTimeSpan(configuration, "DrasiWake:OpenClaw:MaxRetryDelay", TimeSpan.FromSeconds(5))
         };
 
         return new DrasiWakeHostSettings(

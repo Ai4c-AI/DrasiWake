@@ -48,8 +48,10 @@ public static class DrasiWakeHostBuilder
             provider.GetRequiredService<DrasiServerClient>(),
             settings.Drasi,
             provider.GetRequiredService<TimeProvider>()));
-        services.AddHttpClient<OpenClawMetaInvocationClient>();
-        services.AddTransient<IWakeSink>(provider => provider.GetRequiredService<OpenClawMetaInvocationClient>());
+        services.AddSingleton<IWakeSink>(provider => new TargetRoutedWakeSink(
+            provider.GetRequiredService<IHttpClientFactory>(),
+            settings.OpenClaw,
+            settings.OpenClawTargets));
         services.AddSingleton<SignalInbox>(_ => new SignalInbox(settings.SignalCapacity));
         services.AddSingleton<SnapshotReconciler>();
         services.AddSingleton<OutboxDispatcher>();

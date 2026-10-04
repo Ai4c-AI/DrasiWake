@@ -24,20 +24,20 @@ public sealed class HostStartupTests
     }
 
     [Fact]
-    public void Aspire_environment_keys_bind_existing_host_endpoints_and_token()
+    public void Named_target_environment_keys_bind_host_gateway_and_token()
     {
         var configuration = CreateConfiguration(new Dictionary<string, string?>
         {
             ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:45123/",
-            ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:45678/",
-            ["DrasiWake:OpenClaw:BearerToken"] = "gateway-test-token"
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:45678/",
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BearerToken"] = "gateway-test-token"
         });
 
         var settings = DrasiWakeHostSettings.FromConfiguration(configuration);
 
         Assert.Equal(new Uri("http://127.0.0.1:45123/"), settings.Drasi.ServerUri);
-        Assert.Equal(new Uri("http://127.0.0.1:45678/"), settings.OpenClaw.BaseAddress);
-        Assert.Equal("gateway-test-token", settings.OpenClaw.BearerToken);
+        Assert.Equal(new Uri("http://127.0.0.1:45678/"), settings.OpenClawTargets["sample-gateway"].BaseAddress);
+        Assert.Equal("gateway-test-token", settings.OpenClawTargets["sample-gateway"].BearerToken);
     }
 
     [Fact]
@@ -200,22 +200,6 @@ public sealed class HostStartupTests
             [JsonNode.Parse("""{"SensorId":"sensor-1","Temperature":21.5}""")]));
     }
 
-    [Fact]
-    public async Task Gateway_retention_shorter_than_retry_age_fails_before_registry_load()
-    {
-        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
-        {
-            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml"),
-            ["DrasiWake:OpenClaw:IdempotencyRetention"] = "01:00:00",
-            ["DrasiWake:Outbox:MaximumRetryAge"] = "02:00:00"
-        }));
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => host.StartAsync(TestContext.Current.CancellationToken));
-
-        Assert.Contains("retention", exception.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
     [Theory]
     [InlineData("DrasiWake:WorkerCount", "not-a-number")]
     [InlineData("DrasiWake:DispatchPollInterval", "not-a-duration")]
@@ -272,13 +256,10 @@ public sealed class HostStartupTests
         var values = new Dictionary<string, string?>
         {
             ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
-            ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:8081",
             ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:8081",
             ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
             ["DrasiWake:Database:Path"] = Path.Combine(Path.GetTempPath(), $"DrasiWake-test-{Guid.NewGuid():N}"),
-            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml"),
-            ["DrasiWake:OpenClaw:IdempotencyRetention"] = "30.00:00:00",
-            ["DrasiWake:Outbox:MaximumRetryAge"] = "7.00:00:00"
+            ["DrasiWake:Registry:Path"] = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yaml")
         };
         foreach (var entry in overrides)
             values[entry.Key] = entry.Value;

@@ -19,7 +19,7 @@ public sealed class MetaInvocationRequestTests
             Content = new StringContent(AcceptedResponseJson, Encoding.UTF8, "application/json")
         });
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient);
+        var client = CreateClient(httpClient);
         var request = new WakeRequest(
             "binding-1",
             "session-1",
@@ -50,7 +50,7 @@ public sealed class MetaInvocationRequestTests
             Content = new StringContent(AcceptedResponseJson, Encoding.UTF8, "application/json")
         });
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient);
+        var client = CreateClient(httpClient);
         var request = new WakeRequest(
             "binding-1",
             "session-1",
@@ -76,7 +76,7 @@ public sealed class MetaInvocationRequestTests
             ? Task.FromException<HttpResponseMessage>(new TaskCanceledException("Gateway response timed out."))
             : Task.FromResult(AcceptedResponse()));
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient, new OpenClawOptions
+        var client = CreateClient(httpClient, new OpenClawOptions
         {
             MaxRetryAttempts = 1,
             RetryBaseDelay = TimeSpan.Zero
@@ -96,7 +96,7 @@ public sealed class MetaInvocationRequestTests
             Content = new StringContent("""{"success":false,"error":"Idempotency-Key was already used for a different request."}""")
         }));
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient, new OpenClawOptions
+        var client = CreateClient(httpClient, new OpenClawOptions
         {
             MaxRetryAttempts = 3,
             RetryBaseDelay = TimeSpan.Zero
@@ -117,7 +117,7 @@ public sealed class MetaInvocationRequestTests
                 """{"invocationId":"3a1d3589-2856-4f6b-b572-9f9e060db134","status":"Uncertain","result":null,"error":"Gateway restarted during invocation.","createdAtUtc":"2026-10-02T12:34:56Z"}""")
         }));
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient, new OpenClawOptions
+        var client = CreateClient(httpClient, new OpenClawOptions
         {
             RetryBaseDelay = TimeSpan.Zero
         });
@@ -131,7 +131,7 @@ public sealed class MetaInvocationRequestTests
     {
         var handler = new ConcurrentGatewayHandler();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://gateway.test/") };
-        var client = new OpenClawMetaInvocationClient(httpClient, new OpenClawOptions { MaxRetryAttempts = 0 });
+        var client = CreateClient(httpClient, new OpenClawOptions { MaxRetryAttempts = 0 });
         var request = CreateRequest();
 
         var acceptances = await Task.WhenAll(
@@ -155,6 +155,17 @@ public sealed class MetaInvocationRequestTests
         "1.0",
         null,
         "sample-gateway");
+
+    private static OpenClawMetaInvocationClient CreateClient(
+        HttpClient httpClient,
+        OpenClawOptions? options = null)
+        => new(
+            httpClient,
+            options ?? new OpenClawOptions(),
+            new OpenClawTargetOptions(
+                new Uri("https://gateway.test/"),
+                null,
+                TimeSpan.FromDays(30)));
 
     private static HttpResponseMessage AcceptedResponse() => new(HttpStatusCode.Accepted)
     {

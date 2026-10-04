@@ -117,7 +117,6 @@ public sealed class OutboxTargetRecoveryTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["DrasiWake:Drasi:ServerUri"] = "http://127.0.0.1:8080",
-                ["DrasiWake:OpenClaw:BaseAddress"] = "http://127.0.0.1:8081",
                 ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "http://127.0.0.1:8081",
                 ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
                 ["DrasiWake:Database:Path"] = Path.Combine(root, "database"),

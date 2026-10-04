@@ -6,21 +6,28 @@ using DrasiWake.Core.Domain;
 
 namespace DrasiWake.Adapters.OpenClaw;
 
-public sealed class OpenClawMetaInvocationClient : IWakeSink
+public sealed class OpenClawMetaInvocationClient : IWakeSink, IDisposable
 {
     private const string InvocationPath = "/api/integration/meta-invocations";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient httpClient;
     private readonly OpenClawOptions options;
+    private readonly OpenClawTargetOptions targetOptions;
 
-    public OpenClawMetaInvocationClient(HttpClient httpClient, OpenClawOptions? options = null)
+    public OpenClawMetaInvocationClient(
+        HttpClient httpClient,
+        OpenClawOptions options,
+        OpenClawTargetOptions targetOptions)
     {
-        this.httpClient = httpClient;
-        this.options = options ?? new OpenClawOptions();
+        this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        this.options = options ?? throw new ArgumentNullException(nameof(options));
+        this.targetOptions = targetOptions ?? throw new ArgumentNullException(nameof(targetOptions));
         this.options.Validate();
-        if (this.options.BaseAddress is not null)
-            httpClient.BaseAddress ??= this.options.BaseAddress;
+        this.targetOptions.Validate("selected target");
+        httpClient.BaseAddress = this.targetOptions.BaseAddress;
     }
+
+    public void Dispose() => httpClient.Dispose();
 
     public async ValueTask<WakeAcceptance> InvokeAsync(WakeRequest request, CancellationToken cancellationToken)
     {
@@ -113,8 +120,8 @@ public sealed class OpenClawMetaInvocationClient : IWakeSink
                 request.SessionId), options: JsonOptions)
         };
         message.Headers.TryAddWithoutValidation("Idempotency-Key", request.IdempotencyKey);
-        if (!string.IsNullOrWhiteSpace(options.BearerToken))
-            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.BearerToken);
+        if (!string.IsNullOrWhiteSpace(targetOptions.BearerToken))
+            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", targetOptions.BearerToken);
         return message;
     }
 

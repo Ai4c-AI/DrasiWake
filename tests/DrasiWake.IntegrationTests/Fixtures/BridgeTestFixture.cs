@@ -51,13 +51,13 @@ internal sealed class BridgeTestFixture : IAsyncDisposable
             });
         Store = CreateStore();
         Reconciler = new SnapshotReconciler(ChangeSource, Store, Registry);
-        GatewayClient = new OpenClawMetaInvocationClient(gatewayHttpClient, new OpenClawOptions
-        {
-            BaseAddress = new Uri("http://gateway.test"),
-            MaxRetryAttempts = 0,
-            GatewayIdempotencyRetention = TimeSpan.FromDays(30),
-            MaximumOutboxRetryAge = TimeSpan.FromDays(7)
-        });
+        GatewayClient = new OpenClawMetaInvocationClient(
+            gatewayHttpClient,
+            new OpenClawOptions { MaxRetryAttempts = 0 },
+            new OpenClawTargetOptions(
+                new Uri("http://gateway.test/"),
+                null,
+                TimeSpan.FromDays(30)));
         Dispatcher = new OutboxDispatcher(Store, GatewayClient, Registry);
         DrasiHandler = drasiHandler;
     }
