@@ -1,7 +1,7 @@
 # DrasiWake Raft 高可用设计规格
 
 - 日期：2026-10-07
-- 状态：设计已获用户确认；待规格文档审阅
+- 状态：设计已获用户确认；规格审阅通过
 - 参考实现：`E:\GitHub\Slik\src\SlikCache`
 - 目标平台：.NET 10；DotNext.AspNetCore.Cluster（与参考项目使用的 6.9.0 对齐）
 
