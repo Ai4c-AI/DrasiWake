@@ -131,7 +131,7 @@ internal sealed class BridgeTestFixture : IAsyncDisposable
         return new RaftBridgeStore(new ProjectionBackedExecutor(projection), projection);
     }
 
-    private sealed class ProjectionBackedExecutor(IRaftBridgeProjection projection) : IRaftCommandExecutor
+    internal sealed class ProjectionBackedExecutor(IRaftBridgeProjection projection) : IRaftCommandExecutor
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
 

@@ -212,6 +212,8 @@ public static class DrasiWakeHostBuilder
         });
         services.Replace(ServiceDescriptor.Singleton<RaftBridgeStateMachine>(provider =>
         {
+            provider.GetRequiredService<HostStartupValidator>()
+                .StartAsync(CancellationToken.None).GetAwaiter().GetResult();
             var stateMachine = ActivatorUtilities.CreateInstance<RaftBridgeStateMachine>(
                 provider,
                 new DirectoryInfo(Path.Combine(settings.Cluster.RaftDataPath, "snapshots")),

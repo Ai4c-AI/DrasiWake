@@ -259,7 +259,7 @@
 
   预期：命令序列化、状态机和 snapshot 测试通过。
 
-- [ ] **提交 Task 3 变更。** 与 Task 2/4 共享投影代码仍在同一未提交工作区；按最终集成提交边界一并整理。
+- [x] **提交 Task 3 变更。** Tasks 2–7 已整理提交为 `2fe06ec`。
 
 ## 任务 4：将所有 `IBridgeStore` 写操作改为经 Raft 提交
 
@@ -298,7 +298,7 @@
 
   预期：两个测试项目全部通过。
 
-- [ ] **提交 Task 4 变更。** 与 Task 2/3 共享的投影代码仍在同一未提交工作区；按最终集成提交边界一并整理。
+- [x] **提交 Task 4 变更。** 已包含于 `2fe06ec`。
 
 ## 任务 5：托管集群并保持单节点启动兼容
 
@@ -338,7 +338,7 @@
 
   预期：两个命令成功；既有 `Valid_registry_migrates_database_and_database_directory_has_single_owner` 测试继续通过。
 
-- [ ] **提交 Task 5 变更。** 与 Task 2–4 一起整理最终提交边界。
+- [x] **提交 Task 5 变更。** 已包含于 `2fe06ec`。
 
 ## 任务 6：按领导权 epoch 门控并重新创建 Bridge worker
 
@@ -379,7 +379,7 @@
 
   预期：只有当前 Leader 运行工作，且原恢复语义不变。
 
-- [ ] **提交 Task 6 变更。** 与 Task 2–5 一起整理最终提交边界。
+- [x] **提交 Task 6 变更。** 已包含于 `2fe06ec`。
 
 ## 任务 7：增加认证成员管理和配置兼容性检查
 
@@ -427,7 +427,7 @@
 
   预期：未授权或不兼容的成员变更不产生任何效果；日志和错误响应中无凭据。
 
-- [ ] **提交 Task 7 变更。** 与前序未提交的 Raft HA 变更一并整理提交边界。
+- [x] **提交 Task 7 变更。** 已包含于 `2fe06ec`。
 
 ## 任务 8：验证三节点复制、quorum 丢失和故障切换
 
@@ -444,9 +444,9 @@
 - Fixture 暴露 `WaitForLeaderAsync`、`StopNodeWithoutMembershipChangeAsync`、`RestartNodeAsync`、`ReadProjectionAsync` 和 `DisposeAsync`。
 - 每个节点使用 fake Drasi source 和具幂等能力的 fake Gateway，但使用真实 DotNext consensus、持久集群配置、状态机、Raft Store 和 SonnetDB 投影。
 
-- [ ] **步骤 1：先写命令复制与持久重启失败测试。** 经 Leader 提交一条 `CreateOrUpdatePendingWake`；等待三个投影到达相同 Raft 索引；停止并重启一个 follower，沿用原本地目录；断言它从 snapshot/日志恢复，并在标记 ready 前得到相同 outbox/checkpoint 状态。
+- [x] **步骤 1：先写命令复制与持久重启失败测试。** 验证已受理 outbox/checkpoint 出现在持久快照中，再提交快照之后的独立 wake；停止 follower 后保留 Raft 目录、移走旧 SonnetDB 投影，确认快照尚不含新 wake；重启后验证空投影从快照和后续日志完整重建。该测试暴露并修复了快照恢复早于数据库迁移的问题。
 
-- [ ] **步骤 2：先写 Leader 故障切换测试。** 提交 pending wake，在不调用成员移除的情况下停止 Leader 的传输；等待另外两个节点选出新 Leader；断言新 Leader 完成恢复并分发 wake。
+- [x] **步骤 2：先写 Leader 故障切换测试。** 仅使用真实 Leader worker：Gateway 已受理但响应尚未返回时停止 Leader，不调用成员移除；新 Leader 恢复并以相同幂等键重放，最终完成 wake。
 
   ```csharp
   [Fact]
@@ -454,38 +454,41 @@
   {
       await using var cluster = await RaftClusterFixture.CreateAsync(3, TestContext.Current.CancellationToken);
       var oldLeader = await cluster.WaitForLeaderAsync(TestContext.Current.CancellationToken);
-      var wake = await cluster.CreatePendingWakeAsync(oldLeader);
       cluster.Gateway.HoldAcceptedResponse();
-      var dispatch = cluster.DispatchOnceAsync(oldLeader, wake.Id);
+      var wake = await cluster.CreatePendingWakeAsync(
+          oldLeader, TestContext.Current.CancellationToken, dispatchImmediately: true);
       await cluster.Gateway.FirstRequestReceived.WaitAsync(TestContext.Current.CancellationToken);
-      await cluster.StopNodeWithoutMembershipChangeAsync(oldLeader);
+      await cluster.StopNodeWithoutMembershipChangeAsync(oldLeader, TestContext.Current.CancellationToken);
       cluster.Gateway.ReleaseFirstResponseAsTimeout();
-      await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch);
 
       var newLeader = await cluster.WaitForLeaderAsync(TestContext.Current.CancellationToken);
-      await cluster.WaitForStatusAsync(newLeader, wake.Id, WakeOutboxStatus.Completed);
+      await cluster.WaitForWakeStatusAsync(
+          newLeader, wake.Id, WakeOutboxStatus.Completed, TestContext.Current.CancellationToken);
 
       Assert.Single(cluster.Gateway.LogicalInvocations);
+      Assert.True(cluster.Gateway.Requests.Count >= 2);
       Assert.All(cluster.Gateway.Requests, request => Assert.Equal(wake.IdempotencyKey, request.IdempotencyKey));
-      await cluster.AssertAllAvailableProjectionsEqualAsync();
+      await cluster.AssertAvailableProjectionsEqualAsync(TestContext.Current.CancellationToken);
   }
   ```
 
-- [ ] **步骤 3：先写失去 quorum 测试。** 不做成员移除而停止两个节点；断言剩余节点不能提交命令、不能为新 claim 调 Gateway、outbox 状态保持不变。恢复一个节点后断言 quorum 恢复、Leader 重新选出、已提交状态一致。
+- [x] **步骤 3：先写失去 quorum 测试。** 不做成员移除而停止原 Leader 的两个 follower；等待共识和成员可用多数派均丢失；断言写入及包含现有 wake 的 claim 被拒绝、无 Gateway 受理、业务投影不变。恢复一个 follower 后验证重新提交与投影收敛。
 
-- [ ] **步骤 4：先写成员变更集成测试。** 通过兼容性预检添加第四个节点，使用独立本地目录；等待其追平后经认证 gRPC 移除；断言剩余成员继续提交且被移除节点不再接收日志项。
+- [x] **步骤 4：先写成员变更集成测试。** 第四节点以原三个成员为 bootstrap 配置启动，经认证 gRPC 添加；检查添加前已存在的 wake 和完整投影，避免只凭索引判定追平；移除后验证原成员继续提交且候选不再接收新 wake。
 
-- [ ] **步骤 5：实现 Fixture 并运行故障测试。** 动态分配端口、使用临时 TLS 证书、在 abrupt-stop 路径禁用优雅成员移除，并在 Fixture 释放时清理每个命名测试目录。不得依赖外部 Drasi/Gateway 或固定 sleep；使用带超时的 term、索引和状态变更断言。
+- [x] **步骤 5：实现 Fixture 并运行故障测试。** 使用独立 loopback 地址/动态端口、显式 CA 信任、真实 Host 和有界条件轮询。仅对提交与选举竞态重放同一 wake ID/幂等键并记录警告；失去 quorum 的拒绝断言不重试。DotNext 6.9.0 未释放最终已完成的 SnapshotWriter，全部 Host 停止后显式 finalization，再清理严格校验的 fixture 自有目录；清理错误保留并汇总。
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.RaftFailoverTests`
 
   预期：真实节点复制、快照、Leader 切换、quorum、幂等性和成员管理断言全部通过。
 
-- [ ] **步骤 6：运行所有集成测试并提交。**
+- [x] **步骤 6：运行所有集成测试并提交。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release`
 
   预期：本地集成测试全部通过；真实服务测试仍保持 opt-in。
+
+  实测：加强后的 RaftFailoverTests 4/4；完整 IntegrationTests 101 成功、0 失败、3 个外部服务 opt-in 跳过。旧 target 恢复测试改为调用 Leader preparation，并复用测试专用命令 executor；生产无本地写入回退。独立复核确认快照重建及 migration-first 启动顺序无重要问题。
 
   ```text
   git add tests/DrasiWake.IntegrationTests

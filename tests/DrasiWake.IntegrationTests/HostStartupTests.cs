@@ -470,19 +470,32 @@ public sealed class HostStartupTests
     }
 
     [Fact]
-    public void Production_bridge_store_registration_uses_only_the_raft_adapter()
+    public async Task Production_bridge_store_registration_uses_only_the_raft_adapter()
     {
-        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>()));
+        var (root, registryPath) = await CreateSampleRegistryWithTargetAsync("sample-gateway");
+        try
+        {
+            using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:Registry:Path"] = registryPath,
+                ["DrasiWake:Database:Path"] = Path.Combine(root, "database"),
+                ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(root, "raft")
+            }));
 
-        Assert.IsType<RaftBridgeStore>(host.Services.GetRequiredService<IBridgeStore>());
-        Assert.IsType<SonnetBridgeStore>(host.Services.GetRequiredService<IRaftBridgeProjection>());
-        Assert.IsType<DotNextRaftCommandExecutor>(host.Services.GetRequiredService<IRaftCommandExecutor>());
-        Assert.False(typeof(IBridgeStore).IsAssignableFrom(typeof(SonnetBridgeStore)));
-        Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is HostStartupValidator);
-        Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is RaftLeaderHostedService);
-        Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service =>
-            service.GetType() == typeof(BridgeHostedService) ||
-            service.GetType() == typeof(ReconciliationHostedService));
+            Assert.IsType<RaftBridgeStore>(host.Services.GetRequiredService<IBridgeStore>());
+            Assert.IsType<SonnetBridgeStore>(host.Services.GetRequiredService<IRaftBridgeProjection>());
+            Assert.IsType<DotNextRaftCommandExecutor>(host.Services.GetRequiredService<IRaftCommandExecutor>());
+            Assert.False(typeof(IBridgeStore).IsAssignableFrom(typeof(SonnetBridgeStore)));
+            Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is HostStartupValidator);
+            Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is RaftLeaderHostedService);
+            Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service =>
+                service.GetType() == typeof(BridgeHostedService) ||
+                service.GetType() == typeof(ReconciliationHostedService));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

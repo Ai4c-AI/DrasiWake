@@ -3,6 +3,9 @@ using DrasiWake.Core.Domain;
 using DrasiWake.Persistence.SonnetDB;
 using DrasiWake.Persistence.SonnetDB.Entities;
 using DrasiWake.LocalEnvironment;
+using DrasiWake.IntegrationTests.Fixtures;
+using DrasiWake.Persistence.Raft;
+using DrasiWake.Persistence.SonnetDB.Replication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,8 +26,7 @@ public sealed class OutboxTargetRecoveryTests
             var outboxId = Guid.NewGuid();
             await SeedWakeAsync(host, CreateWake(outboxId, BindingId, null, WakeOutboxStatus.Pending));
 
-            await host.Services.GetRequiredService<HostStartupValidator>()
-                .StartAsync(TestContext.Current.CancellationToken);
+            await PrepareLeaderAsync(host);
 
             var persisted = await LoadWakeAsync(host, outboxId);
             Assert.Equal("sample-gateway", persisted.OpenClawTarget);
@@ -46,8 +48,7 @@ public sealed class OutboxTargetRecoveryTests
             await SeedWakeAsync(host, CreateWake(outboxId, "removed-binding", null, WakeOutboxStatus.Pending));
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => host.Services.GetRequiredService<HostStartupValidator>()
-                    .StartAsync(TestContext.Current.CancellationToken));
+                () => PrepareLeaderAsync(host));
 
             Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
             Assert.Contains("removed-binding", exception.Message, StringComparison.Ordinal);
@@ -73,8 +74,7 @@ public sealed class OutboxTargetRecoveryTests
                 WakeOutboxStatus.RetryScheduled));
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => host.Services.GetRequiredService<HostStartupValidator>()
-                    .StartAsync(TestContext.Current.CancellationToken));
+                () => PrepareLeaderAsync(host));
 
             Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
             Assert.Contains("removed-gateway", exception.Message, StringComparison.Ordinal);
@@ -104,8 +104,7 @@ public sealed class OutboxTargetRecoveryTests
                 WakeOutboxStatus.RetryScheduled));
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => host.Services.GetRequiredService<HostStartupValidator>()
-                    .StartAsync(TestContext.Current.CancellationToken));
+                () => PrepareLeaderAsync(host));
 
             Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
             Assert.Contains("previous-gateway", exception.Message, StringComparison.Ordinal);
@@ -133,8 +132,7 @@ public sealed class OutboxTargetRecoveryTests
                 WakeOutboxStatus.Pending));
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => host.Services.GetRequiredService<HostStartupValidator>()
-                    .StartAsync(TestContext.Current.CancellationToken));
+                () => PrepareLeaderAsync(host));
 
             Assert.Contains(outboxId.ToString(), exception.Message, StringComparison.Ordinal);
             var persisted = await LoadWakeAsync(host, outboxId);
@@ -156,8 +154,7 @@ public sealed class OutboxTargetRecoveryTests
             var outboxId = Guid.NewGuid();
             await SeedWakeAsync(host, CreateWake(outboxId, "removed-binding", null, WakeOutboxStatus.Completed));
 
-            await host.Services.GetRequiredService<HostStartupValidator>()
-                .StartAsync(TestContext.Current.CancellationToken);
+            await PrepareLeaderAsync(host);
 
             var persisted = await LoadWakeAsync(host, outboxId);
             Assert.Null(persisted.OpenClawTarget);
@@ -197,7 +194,18 @@ public sealed class OutboxTargetRecoveryTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(settings)
             .Build();
-        return (root, DrasiWakeHostBuilder.CreateHost(configuration));
+        return (root, DrasiWakeHostBuilder.CreateHost(configuration, services =>
+            services.AddSingleton<IRaftCommandExecutor>(provider =>
+                new BridgeTestFixture.ProjectionBackedExecutor(
+                    provider.GetRequiredService<IRaftBridgeProjection>()))));
+    }
+
+    private static async Task PrepareLeaderAsync(IHost host)
+    {
+        await host.Services.GetRequiredService<HostStartupValidator>()
+            .StartAsync(TestContext.Current.CancellationToken);
+        await host.Services.GetRequiredService<IRaftLeaderStartupPreparation>()
+            .PrepareBeforeRecoveryAsync(TestContext.Current.CancellationToken);
     }
 
     private static WakeOutbox CreateWake(
