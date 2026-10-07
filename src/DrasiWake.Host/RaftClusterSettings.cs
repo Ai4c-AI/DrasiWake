@@ -196,8 +196,7 @@ public sealed class RaftClusterSettings
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException)
         {
             throw new InvalidOperationException(
-                "The configured Raft TLS certificate could not be loaded.",
-                exception);
+                "The configured Raft TLS certificate could not be loaded.");
         }
 
         var now = DateTime.UtcNow;

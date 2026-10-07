@@ -11,6 +11,162 @@ namespace DrasiWake.IntegrationTests;
 
 public sealed class LeaderWorkerLifecycleTests
 {
+    [Theory]
+    [InlineData(HttpRequestError.ResponseEnded, true)]
+    [InlineData(HttpRequestError.ConnectionError, false)]
+    [InlineData(HttpRequestError.HttpProtocolError, false)]
+    [InlineData(HttpRequestError.InvalidResponse, false)]
+    public void Only_premature_HTTP_body_EOF_is_transient_among_HttpIOExceptions(
+        HttpRequestError error, bool retryable)
+    {
+        Assert.Equal(retryable,
+            RetryableLeaderRecoveryException.IsTransient(new HttpIOException(error, "private upstream detail")));
+    }
+
+    [Fact]
+    public void Ordinary_IO_failures_are_not_transient_recovery_failures()
+    {
+        Assert.False(RetryableLeaderRecoveryException.IsTransient(new IOException("private storage detail")));
+        Assert.False(RetryableLeaderRecoveryException.IsTransient(new InvalidDataException("corrupt persistence")));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Premature_HTTP_body_EOF_is_marked_only_during_recovery(
+        bool failPreparation, bool retryable)
+    {
+        var events = new ConcurrentQueue<string>();
+        var failure = new HttpIOException(HttpRequestError.ResponseEnded, "private upstream detail");
+        var preparation = new ObservableStartupPreparation(events) { Failure = failPreparation ? failure : null };
+        var recovery = new ObservableRecovery(events) { Failure = failPreparation ? null : failure };
+        var runtime = new LeaderWorkerRuntime(preparation, recovery, [new ObservableWorker(events)]);
+        var exception = await Record.ExceptionAsync(() => runtime.StartAsync(TestContext.Current.CancellationToken));
+        Assert.NotNull(exception);
+        if (retryable)
+            Assert.Same(failure, Assert.IsType<RetryableLeaderRecoveryException>(exception).InnerException);
+        else
+            Assert.Same(failure, exception);
+        Assert.DoesNotContain("worker-start", events);
+        await runtime.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Theory]
+    [InlineData(true, 503, false)]
+    [InlineData(false, 503, true)]
+    [InlineData(false, 401, false)]
+    [InlineData(false, 400, false)]
+    public async Task Only_transient_recovery_HTTP_errors_are_marked_for_retry(
+        bool failPreparation, int status, bool retryable)
+    {
+        var events = new ConcurrentQueue<string>();
+        var failure = new HttpRequestException("private upstream detail", null, (System.Net.HttpStatusCode)status);
+        var preparation = new ObservableStartupPreparation(events) { Failure = failPreparation ? failure : null };
+        var recovery = new ObservableRecovery(events) { Failure = failPreparation ? null : failure };
+        var runtime = new LeaderWorkerRuntime(preparation, recovery, [new ObservableWorker(events)]);
+        var exception = await Record.ExceptionAsync(() => runtime.StartAsync(TestContext.Current.CancellationToken));
+        Assert.NotNull(exception);
+        Assert.Equal(retryable, exception != failure);
+        Assert.DoesNotContain("worker-start", events);
+        await runtime.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Host_shutdown_cancels_transient_recovery_backoff_without_another_scope()
+    {
+        var leadership = new FakeRaftLeadership(new RaftLeadershipChange(32, true, true));
+        using var services = CreateServices(leadership, _ => new ObservableRuntime
+        {
+            StartupFailure = new RetryableLeaderRecoveryException(
+                new HttpRequestException("unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable))
+        });
+        var hostedService = CreateHostedService(leadership, services);
+        await hostedService.StartAsync(TestContext.Current.CancellationToken);
+        await services.WaitForRuntimeCountAsync(1);
+        await services.GetRuntime(0).Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await hostedService.StopAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        Assert.Equal(1, services.RuntimeCount);
+    }
+
+    [Fact]
+    public async Task Transient_startup_failure_retries_unchanged_leadership_after_prior_runtime_stops()
+    {
+        var leadership = new FakeRaftLeadership(new RaftLeadershipChange(30, true, true));
+        var attempts = 0;
+        using var services = CreateServices(leadership, _ =>
+        {
+            var firstAttempt = Interlocked.Increment(ref attempts) == 1;
+            var runtime = new ObservableRuntime
+            {
+                StartupFailure = firstAttempt
+                    ? new RetryableLeaderRecoveryException(
+                        new HttpRequestException("private upstream detail", null, System.Net.HttpStatusCode.ServiceUnavailable))
+                    : null
+            };
+            if (firstAttempt)
+                runtime.HoldStop();
+            return runtime;
+        });
+        var logger = new CapturingLogger<RaftLeaderHostedService>();
+        var hostedService = new RaftLeaderHostedService(
+            leadership, services.GetRequiredService<IServiceScopeFactory>(), logger);
+        try
+        {
+            await hostedService.StartAsync(TestContext.Current.CancellationToken);
+            await services.WaitForRuntimeCountAsync(1);
+            var first = services.GetRuntime(0);
+            await first.StopEntered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.Equal(1, services.RuntimeCount);
+            first.AllowStopToFinish();
+            await first.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            await services.WaitForRuntimeCountAsync(2);
+            await services.GetRuntime(1).Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.True(first.EpochCancellationRequested);
+            Assert.NotEqual(first.ComponentIdentity, services.GetRuntime(1).ComponentIdentity);
+            Assert.True(first.ScopeDisposed);
+            Assert.Equal(30, leadership.Term);
+            Assert.Contains(logger.Messages, message => message.Contains("leader-recovery-transient", StringComparison.Ordinal));
+            Assert.DoesNotContain(logger.Messages, message => message.Contains("private upstream detail", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (services.RuntimeCount > 0)
+                services.GetRuntime(0).AllowStopToFinish();
+            await hostedService.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Permanent_failure_or_quorum_loss_does_not_retry(bool loseQuorum)
+    {
+        var leadership = new FakeRaftLeadership(new RaftLeadershipChange(31, true, true));
+        using var services = CreateServices(leadership, _ => new ObservableRuntime
+        {
+            StartupFailure = loseQuorum
+                ? new RetryableLeaderRecoveryException(
+                    new HttpRequestException("unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable))
+                : new InvalidDataException("corrupt persistence or invalid configuration")
+        });
+        var hostedService = CreateHostedService(leadership, services);
+        try
+        {
+            await hostedService.StartAsync(TestContext.Current.CancellationToken);
+            await services.WaitForRuntimeCountAsync(1);
+            await services.GetRuntime(0).Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            if (loseQuorum)
+                leadership.Publish(new RaftLeadershipChange(31, true, false));
+            await Task.Delay(1500, TestContext.Current.CancellationToken);
+            Assert.Equal(1, services.RuntimeCount);
+        }
+        finally
+        {
+            await hostedService.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
     [Fact]
     public async Task Follower_does_not_create_a_leader_runtime()
     {
@@ -240,8 +396,11 @@ public sealed class LeaderWorkerLifecycleTests
         }
     }
 
-    private sealed class ObservableRuntime : ILeaderWorkerRuntime
+    private sealed class ObservableRuntime : ILeaderWorkerRuntime, IDisposable
     {
+        public Exception? StartupFailure { get; init; }
+        public bool ScopeDisposed { get; private set; }
+        public void Dispose() => ScopeDisposed = true;
         private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Guid ComponentIdentity { get; } = Guid.NewGuid();
@@ -255,6 +414,8 @@ public sealed class LeaderWorkerLifecycleTests
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
+            if (StartupFailure is { } failure)
+                return Task.FromException(failure);
             Started.TrySetResult();
             return Task.CompletedTask;
         }
@@ -281,15 +442,17 @@ public sealed class LeaderWorkerLifecycleTests
 
     private sealed class ObservableStartupPreparation(ConcurrentQueue<string> events) : IRaftLeaderStartupPreparation
     {
+        public Exception? Failure { get; init; }
         public Task PrepareBeforeRecoveryAsync(CancellationToken cancellationToken)
         {
             events.Enqueue("prepare");
-            return Task.CompletedTask;
+            return Failure is { } failure ? Task.FromException(failure) : Task.CompletedTask;
         }
     }
 
     private sealed class ObservableRecovery(ConcurrentQueue<string> events) : IRecoveryCoordinator
     {
+        public Exception? Failure { get; init; }
         public bool? EnqueueDispatchableItems { get; private set; }
 
         public Task RecoverAsync(CancellationToken cancellationToken)
@@ -302,7 +465,7 @@ public sealed class LeaderWorkerLifecycleTests
         {
             EnqueueDispatchableItems = enqueueDispatchableItems;
             events.Enqueue("recover");
-            return Task.CompletedTask;
+            return Failure is { } failure ? Task.FromException(failure) : Task.CompletedTask;
         }
 
         public Task ReconcileAfterReconnectAsync(QueryIdentity query, CancellationToken cancellationToken)

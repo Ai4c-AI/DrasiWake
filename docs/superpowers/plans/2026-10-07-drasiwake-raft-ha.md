@@ -513,11 +513,11 @@
 - 为 Leader 恢复和成员管理添加 activity；遥测中的成员 endpoint 必须哈希，结果/错误使用固定代码。
 - 文档说明三节点环境变量和目录、TLS 证书/信任配置、共享管理令牌注入、Add/Remove 安全顺序、无 quorum 行为、重启恢复和不变的单节点开发启动方式。
 
-- [ ] **步骤 1：先写遥测脱敏失败断言。** 验证 Raft 成员 URL、管理令牌、证书密码、事实载荷和异常文本不出现在日志或 metric tag 中。
-- [ ] **步骤 2：实现有限基数指标和安全日志。** 复用 `BridgeTelemetry` 的 ActivitySource/Meter；不得将原始 NodeId、endpoint 或任意异常文本作为指标维度。
-- [ ] **步骤 3：更新运维手册和 README。** 说明每个成员使用自己的 SonnetDB/Raft 目录、三节点 quorum 与恢复顺序；展示安全 secret-provider 键名但不提供凭据；说明仅多数派可以推进处理且 Gateway 语义是至少一次。
-- [ ] **步骤 4：用 Host 设置测试核对文档命令和配置键。** 提供三个节点的示例，节点 ID、路径、地址各不相同，包含 TLS 证书引用和 secret-provider 令牌键名；已签入 `appsettings.json` 继续使用无密钥单节点配置。
-- [ ] **步骤 5：运行脱敏测试和 Release 全量验证。**
+- [x] **步骤 1：先写遥测脱敏失败断言。** 覆盖实际 RPC、Leader lifecycle、证书加载和状态机失败路径，验证成员 URL、管理令牌、证书密码、事实载荷和异常文本不出现在应用日志、metric tag 或 activity 中。
+- [x] **步骤 2：实现有限基数指标和安全日志。** 复用 `BridgeTelemetry` 的 ActivitySource/Meter，接入真实 lifecycle/state-machine/RPC。成员 endpoint 仅以哈希出现在日志/activity，不作为指标维度；错误使用固定类别。
+- [x] **步骤 3：更新运维手册和 README。** 包含独立目录、TLS/trust、secret-provider 注入、成员变更、无 quorum 行为、恢复及至少一次语义。复核修正管理端口说明：所有成员管理 TCP 端口须相同，而非 Raft 到管理端口的偏移相同。
+- [x] **步骤 4：用 Host 设置测试核对文档命令和配置键。** 三个无密钥 JSON 示例通过设置校验，验证不同 ID/地址/目录及相同管理端口；`appsettings.json` 保持无密钥单节点配置。
+- [x] **步骤 5：运行脱敏测试和 Release 全量验证。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.TelemetryRedactionTests`
 
@@ -527,12 +527,18 @@
 
   预期：必需测试全部通过；opt-in 真实服务测试在未显式启用时继续跳过；Host 发布产物包含 DotNext 和 ASP.NET Core 所需依赖。
 
+  最终实测：完整 Release **260 成功、0 失败、3 opt-in 跳过**；Host Release publish 成功，检查 DotNext/gRPC/Raft DLL 与 `Microsoft.AspNetCore.App` runtime 引用。发布为 framework-dependent，目标节点需安装 .NET 10 / ASP.NET Core 10 runtime。
+
+  整分支复核发现并修复：稳定 Leader 暂时性 Drasi 恢复失败后没有重试、100ms 领导权轮询遗留无限 token wait。恢复仅对明确上游暂时性错误执行 1/2/4/5 秒封顶且可取消的重试，每次使用新 scope，先取消/停止/释放旧 runtime；配置、认证、坏数据及普通存储 IO 错误保持 fail-closed。真实节点用匹配的 Drasi query 验证 HTTP 503 和响应体提前 EOF 的同 term 重试，权威快照完成前无 outbox/Gateway 调用。提前 EOF 仅接受已实测 `HttpIOException(ResponseEnded)`，不泛化重试 `IOException`。token callback 测试确认每轮及停止后无遗留注册。
+
   ```text
   git add README.md docs/bridge-core-v1-operations.md src/DrasiWake.Core/Pipeline/BridgeTelemetry.cs src/DrasiWake.Host tests/DrasiWake.IntegrationTests/TelemetryRedactionTests.cs
   git commit -m "docs: document DrasiWake Raft HA operations"
   ```
 
 ## 最终验收清单
+
+**本地实施验证完成；部署验收边界：** Tasks 1–9 已实现并通过上述完整 Release 与 publish 验证。下列清单同时供目标部署验收使用，未执行的外部环境验收不能由本地测试替代。quorum 集成场景将未来到期 wake 作为实际可领取候选验证拒绝，但未额外证明该真实分区下自然到期 periodic dispatch 被抑制；worker 取消与共识 claim 门禁有独立覆盖。Follower catchup duration 为 100ms 采样，短 backlog 可能没有时长样本。外部 Aspire/Drasi/Gateway 合约、目标 DNS/证书/信任及部署凭据仍需环境验收。新增应用遥测脱敏不覆盖第三方 DotNext/HTTP 自动 instrumentation，部署方需另行过滤。
 
 - [ ] 三个真实 DotNext 投票节点对每条已提交命令收敛一致，并可恢复完整快照。
 - [ ] 单节点故障时仍有 quorum；新 Leader 只有在本地投影追平并完成 Drasi snapshot 对账后才能恢复工作。

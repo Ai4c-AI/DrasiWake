@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Text;
+using System.Diagnostics;
+using DrasiWake.Core.Pipeline;
 using DotNext.IO;
 using DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 using DrasiWake.Persistence.SonnetDB.Replication;
@@ -50,15 +52,25 @@ public sealed class RaftBridgeStateMachine : SimpleStateMachine
         long logIndex,
         CancellationToken cancellationToken)
     {
+        var started = Stopwatch.GetTimestamp();
+        var deserialized = false;
         try
         {
             var command = BridgeReplicationSerializer.DeserializeCommand(payload);
+            deserialized = true;
             return await ApplyCommandAsync(command, logIndex, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            _logger.LogError(exception, "Failed to apply Raft bridge command at log index {LogIndex}.", logIndex);
+            _logger.LogError("Raft projection failed with category {FailureCategory} at log index {LogIndex}.",
+                "apply-failure", logIndex);
             throw;
+        }
+        finally
+        {
+            if (!deserialized)
+                BridgeTelemetry.RecordRaftApply(Stopwatch.GetElapsedTime(started),
+                    cancellationToken.IsCancellationRequested ? "cancelled" : "failed");
         }
     }
 
@@ -66,15 +78,24 @@ public sealed class RaftBridgeStateMachine : SimpleStateMachine
         long logIndex,
         CancellationToken cancellationToken)
     {
+        var started = Stopwatch.GetTimestamp();
+        var result = "failed";
         try
         {
             await _projection.AdvanceAppliedIndexAsync(logIndex, cancellationToken).ConfigureAwait(false);
+            result = "succeeded";
             return false;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            _logger.LogError(exception, "Failed to advance Raft bridge projection at log index {LogIndex}.", logIndex);
+            _logger.LogError("Raft projection failed with category {FailureCategory} at log index {LogIndex}.",
+                "apply-failure", logIndex);
             throw;
+        }
+        finally
+        {
+            BridgeTelemetry.RecordRaftApply(Stopwatch.GetElapsedTime(started),
+                cancellationToken.IsCancellationRequested ? "cancelled" : result);
         }
     }
 
@@ -84,26 +105,59 @@ public sealed class RaftBridgeStateMachine : SimpleStateMachine
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
-        command.Validate();
-        await _projection.ApplyReplicatedCommandAsync(command, logIndex, cancellationToken).ConfigureAwait(false);
-        return ++_commandsSinceSnapshot >= _snapshotFrequency;
+        var started = Stopwatch.GetTimestamp();
+        var result = "failed";
+        try
+        {
+            command.Validate();
+            await _projection.ApplyReplicatedCommandAsync(command, logIndex, cancellationToken).ConfigureAwait(false);
+            result = "succeeded";
+            return ++_commandsSinceSnapshot >= _snapshotFrequency;
+        }
+        finally
+        {
+            BridgeTelemetry.RecordRaftApply(Stopwatch.GetElapsedTime(started),
+                cancellationToken.IsCancellationRequested ? "cancelled" : result);
+        }
     }
 
     internal async ValueTask PersistSnapshotAsync(IAsyncBinaryWriter writer, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(writer);
-        var snapshot = await _projection.ExportSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        var payload = BridgeReplicationSerializer.SerializeSnapshot(snapshot);
-        await writer.WriteAsync(payload, token: cancellationToken).ConfigureAwait(false);
-        _commandsSinceSnapshot = 0;
+        var started = Stopwatch.GetTimestamp();
+        var result = "failed";
+        try
+        {
+            var snapshot = await _projection.ExportSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            var payload = BridgeReplicationSerializer.SerializeSnapshot(snapshot);
+            await writer.WriteAsync(payload, token: cancellationToken).ConfigureAwait(false);
+            _commandsSinceSnapshot = 0;
+            result = "succeeded";
+        }
+        finally
+        {
+            BridgeTelemetry.RecordRaftSnapshot(false, Stopwatch.GetElapsedTime(started),
+                cancellationToken.IsCancellationRequested ? "cancelled" : result);
+        }
     }
 
     internal async ValueTask RestoreSnapshotAsync(FileInfo snapshotFile, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshotFile);
-        var payload = await File.ReadAllBytesAsync(snapshotFile.FullName, cancellationToken).ConfigureAwait(false);
-        var snapshot = BridgeReplicationSerializer.DeserializeSnapshot(payload);
-        await _projection.RestoreSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
-        _commandsSinceSnapshot = 0;
+        var started = Stopwatch.GetTimestamp();
+        var result = "failed";
+        try
+        {
+            var payload = await File.ReadAllBytesAsync(snapshotFile.FullName, cancellationToken).ConfigureAwait(false);
+            var snapshot = BridgeReplicationSerializer.DeserializeSnapshot(payload);
+            await _projection.RestoreSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            _commandsSinceSnapshot = 0;
+            result = "succeeded";
+        }
+        finally
+        {
+            BridgeTelemetry.RecordRaftSnapshot(true, Stopwatch.GetElapsedTime(started),
+                cancellationToken.IsCancellationRequested ? "cancelled" : result);
+        }
     }
 }

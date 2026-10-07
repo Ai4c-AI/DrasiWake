@@ -4,6 +4,7 @@ using System.Text;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using ProtoBuf.Grpc;
+using DrasiWake.Core.Pipeline;
 
 namespace DrasiWake.Host;
 
@@ -59,11 +60,13 @@ public sealed class ClusterMembershipGrpcService(
         CallContext context,
         bool add)
     {
-        EnsureAuthorized(context);
         var operation = add ? "Add" : "Remove";
         var memberId = GetStableMemberIdentifier(request?.Endpoint);
+        using var activity = BridgeTelemetry.StartMembership(add, request?.Endpoint);
+        var result = "failed";
         try
         {
+            EnsureAuthorized(context);
             if (request is null ||
                 !Uri.TryCreate(request.Endpoint, UriKind.Absolute, out var endpoint) ||
                 endpoint.Scheme != Uri.UriSchemeHttps ||
@@ -111,15 +114,24 @@ public sealed class ClusterMembershipGrpcService(
             }
 
             LogMembershipOperation(operation, memberId, "succeeded");
+            result = "succeeded";
             return new ClusterManagementResponse { Succeeded = true };
         }
         catch (ClusterMembershipException exception)
         {
-            LogMembershipOperation(operation, memberId, exception.ResultCategory);
+            result = SafeResultCategory(exception.ResultCategory);
+            LogMembershipOperation(operation, memberId, result);
             throw SafeRpcException(exception.StatusCode);
+        }
+        catch (RpcException exception) when (exception.StatusCode is StatusCode.Unauthenticated or StatusCode.Unimplemented)
+        {
+            result = exception.StatusCode == StatusCode.Unauthenticated ? "unauthenticated" : "disabled";
+            throw new RpcException(new Status(exception.StatusCode,
+                exception.StatusCode == StatusCode.Unauthenticated ? AuthenticationFailure : "Management is not available."));
         }
         catch (OperationCanceledException)
         {
+            result = "cancelled";
             LogMembershipOperation(operation, memberId, "cancelled");
             throw new RpcException(new Status(StatusCode.Cancelled, "Management request was cancelled."));
         }
@@ -128,7 +140,22 @@ public sealed class ClusterMembershipGrpcService(
             LogMembershipOperation(operation, memberId, "failed");
             throw new RpcException(new Status(StatusCode.Internal, "Management request failed."));
         }
+        finally
+        {
+            activity?.SetTag("result", result);
+            BridgeTelemetry.RecordMembership(add, result);
+        }
     }
+
+    private static string SafeResultCategory(string category) => category switch
+    {
+        "invalid-endpoint" or "invalid-management-endpoint" or "stale-leader" or "no-quorum" or
+        "duplicate-endpoint" or "duplicate-node-id" or "member-not-found" or "last-member" or
+        "incompatible-member" or "tls-trust-failure" or "remote-auth-failure" or "remote-incompatible" or
+        "compatibility-unavailable" or "leader-unavailable" or "membership-not-committed" or
+        "membership-change-failed" => category,
+        _ => "failed"
+    };
 
     private void EnsureAuthorized(CallContext context)
     {

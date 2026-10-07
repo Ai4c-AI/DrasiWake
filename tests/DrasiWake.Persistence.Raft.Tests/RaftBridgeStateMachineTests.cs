@@ -20,12 +20,75 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using System.Diagnostics.Metrics;
+using DrasiWake.Core.Pipeline;
 using Microsoft.Extensions.Hosting;
 
 namespace DrasiWake.Persistence.Raft.Tests;
 
 public sealed class RaftBridgeStateMachineTests
 {
+    [Fact]
+    public async Task TelemetryRedaction_application_failure_does_not_log_fact_or_exception_text()
+    {
+        const string secret = "private-fact-payload-and-exception-text";
+        await using var database = await TestDatabase.CreateAsync();
+        var logger = new RedactionLogger();
+        await using var stateMachine = new RaftBridgeStateMachine(
+            database.Store, new DirectoryInfo(Path.Combine(database.DirectoryPath, "snapshot")), 2, logger);
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, meterListener) =>
+            {
+                if (instrument.Meter.Name == BridgeTelemetry.MeterName)
+                    meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        var measurements = new List<string>();
+        listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
+            measurements.Add(instrument.Name + string.Join(",", tags.ToArray().Select(t => $"{t.Key}={t.Value}"))));
+        listener.Start();
+        var wake = CreateWake(DateTimeOffset.UtcNow) with { Input = new JsonObject { ["privateFact"] = secret } };
+        await stateMachine.ApplyPayloadAsync(BridgeReplicationSerializer.SerializeCommand(
+            ReplicatedBridgeCommand.Create(BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(wake))), 1, TestContext.Current.CancellationToken);
+        using var stream = new MemoryStream();
+        await stateMachine.PersistSnapshotAsync(IAsyncBinaryWriter.Create(stream, new byte[4096]),
+            TestContext.Current.CancellationToken);
+        var snapshotPath = Path.Combine(database.DirectoryPath, "redaction-snapshot.json");
+        await File.WriteAllBytesAsync(snapshotPath, stream.ToArray(), TestContext.Current.CancellationToken);
+        await stateMachine.RestoreSnapshotAsync(new FileInfo(snapshotPath), TestContext.Current.CancellationToken);
+        var command = ReplicatedBridgeCommand.Create(BridgeCommandKind.MarkAcceptedWithCheckpoint,
+            new MarkAcceptedWithCheckpointPayload(Guid.NewGuid(),
+                new WakeAcceptance(secret, DateTimeOffset.UtcNow),
+                new SnapshotCheckpoint(secret, secret, secret, DateTimeOffset.UtcNow)));
+        await Assert.ThrowsAnyAsync<Exception>(async () => await stateMachine.ApplyPayloadAsync(
+            BridgeReplicationSerializer.SerializeCommand(command), 2, TestContext.Current.CancellationToken));
+
+        Assert.NotEmpty(logger.Messages);
+        Assert.All(logger.Messages.Concat(measurements), message =>
+            Assert.DoesNotContain(secret, message, StringComparison.Ordinal));
+        Assert.All(logger.Exceptions, exception => Assert.Null(exception));
+        Assert.Contains(measurements, m => m.StartsWith("drasiwake.raft.apply", StringComparison.Ordinal));
+        Assert.Contains(measurements, m => m.Contains("operation=export", StringComparison.Ordinal));
+        Assert.Contains(measurements, m => m.Contains("operation=restore", StringComparison.Ordinal));
+    }
+
+    private sealed class RedactionLogger : ILogger<RaftBridgeStateMachine>
+    {
+        public List<string> Messages { get; } = [];
+        public List<Exception?> Exceptions { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception) + exception?.ToString());
+            Exceptions.Add(exception);
+        }
+    }
+
     [Fact]
     public void Command_payload_bytes_are_deterministic_versioned_and_reject_invalid_envelopes()
     {

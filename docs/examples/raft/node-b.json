@@ -1,0 +1,29 @@
+{
+  "DrasiWake": {
+    "Drasi": { "ServerUri": "https://drasi.example.test/" },
+    "Database": { "Path": "C:\\DrasiWake\\node-b\\sonnetdb" },
+    "Registry": { "Path": "C:\\DrasiWake\\contracts\\bindings.yaml" },
+    "OpenClaw": {
+      "Targets": {
+        "production-gateway": {
+          "BaseAddress": "https://gateway.example.test/",
+          "GatewayIdempotencyRetention": "30.00:00:00"
+        }
+      }
+    },
+    "Cluster": {
+      "Mode": "Cluster",
+      "NodeId": "node-b",
+      "ListenAddress": "https://node-b.example.test:5101/",
+      "RaftDataPath": "C:\\DrasiWake\\node-b\\raft",
+      "InitialMembers": [
+        "https://node-a.example.test:5101/",
+        "https://node-b.example.test:5101/",
+        "https://node-c.example.test:5101/"
+      ],
+      "Certificate": { "Path": "C:\\DrasiWake\\node-b\\certificates\\node-b.pfx" },
+      "Management": { "Address": "https://node-b.example.test:5102/" },
+      "SnapshotFrequency": 1000
+    }
+  }
+}

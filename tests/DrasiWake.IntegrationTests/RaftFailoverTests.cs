@@ -1,4 +1,5 @@
 using DotNext.Net.Cluster;
+using DrasiWake.Adapters.DrasiServer;
 using DrasiWake.Core.Domain;
 using DrasiWake.Host;
 using DrasiWake.IntegrationTests.Fixtures;
@@ -16,6 +17,53 @@ public sealed class RaftFailoverCollection
 [Collection(RaftFailoverCollection.Name)]
 public sealed class RaftFailoverTests
 {
+    [Theory]
+    [InlineData(DrasiSnapshotFailure.ServiceUnavailable)]
+    [InlineData(DrasiSnapshotFailure.TruncatedBody)]
+    public async Task Stable_leader_retries_actual_Drasi_snapshot_and_recovers_before_gateway_dispatch(
+        DrasiSnapshotFailure snapshotFailure)
+    {
+        await using var cluster = await RaftClusterFixture.CreateAsync(
+            3, TestContext.Current.CancellationToken, authoritativeSnapshot: true, snapshotFailure: snapshotFailure);
+        var leader = await cluster.WaitForLeaderAsync(TestContext.Current.CancellationToken);
+        var term = cluster.Term(leader);
+        try
+        {
+            await cluster.SnapshotRequested.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+            Assert.Equal(term, cluster.Term(leader));
+            Assert.Empty(cluster.Gateway.Requests);
+            Assert.Empty((await cluster.ReadProjectionAsync(leader, TestContext.Current.CancellationToken)).WakeOutbox);
+            cluster.ReleaseSnapshot();
+            await cluster.Gateway.FirstRequestReceived.WaitAsync(
+                TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+            Assert.Equal(term, cluster.Term(leader));
+            var snapshotWake = Assert.Single(
+                (await cluster.ReadProjectionAsync(leader, TestContext.Current.CancellationToken)).WakeOutbox);
+            Assert.Equal("orders-binding", snapshotWake.BindingId);
+            Assert.Equal("singleton", snapshotWake.SessionId);
+            Assert.Contains("snapshot-order", snapshotWake.InputJson);
+            Assert.Equal(snapshotWake.IdempotencyKey, Assert.Single(cluster.Gateway.Requests).IdempotencyKey);
+        }
+        finally
+        {
+            cluster.ReleaseSnapshot();
+        }
+    }
+
+    [Fact]
+    public async Task Truncated_actual_Drasi_result_body_raises_ResponseEnded_HttpIOException()
+    {
+        await using var services = await LocalClusterServices.StartAsync(
+            TestContext.Current.CancellationToken, authoritativeSnapshot: true,
+            snapshotFailure: DrasiSnapshotFailure.TruncatedBody);
+        using var httpClient = new HttpClient();
+        var client = new DrasiServerClient(httpClient);
+        var exception = await Assert.ThrowsAsync<HttpIOException>(() =>
+            client.ReadSnapshotAsync(new QueryIdentity(services.BaseAddress, "east", "orders"),
+                TestContext.Current.CancellationToken).AsTask());
+        Assert.Equal(HttpRequestError.ResponseEnded, exception.HttpRequestError);
+    }
+
     [Fact]
     public async Task Replicated_projection_survives_follower_restart_from_its_snapshot_and_log()
     {

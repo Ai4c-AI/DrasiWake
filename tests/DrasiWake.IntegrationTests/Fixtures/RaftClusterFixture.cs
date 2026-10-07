@@ -33,6 +33,12 @@ using ProtoBuf.Grpc.Client;
 
 namespace DrasiWake.IntegrationTests.Fixtures;
 
+public enum DrasiSnapshotFailure
+{
+    ServiceUnavailable,
+    TruncatedBody
+}
+
 internal sealed class RaftClusterFixture : IAsyncDisposable
 {
     internal static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(60);
@@ -77,11 +83,15 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
 
     public IReadOnlyList<RaftClusterNode> Nodes => nodes;
     public LocalGatewayService Gateway => localServices.Gateway;
+    public Task SnapshotRequested => localServices.SnapshotRequested.Task;
+    public void ReleaseSnapshot() => localServices.ReleaseSnapshot.TrySetResult();
 
     public static async Task<RaftClusterFixture> CreateAsync(
         int nodeCount,
         CancellationToken cancellationToken = default,
-        int snapshotFrequency = 2)
+        int snapshotFrequency = 2,
+        bool authoritativeSnapshot = false,
+        DrasiSnapshotFailure snapshotFailure = DrasiSnapshotFailure.ServiceUnavailable)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(nodeCount, 3);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(nodeCount, 4);
@@ -98,7 +108,7 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
         try
         {
             rootCertificate = CreateRootCertificate();
-            localServices = await LocalClusterServices.StartAsync(cancellationToken);
+            localServices = await LocalClusterServices.StartAsync(cancellationToken, authoritativeSnapshot, snapshotFailure);
             var managementPort = FindSharedLoopbackPort(
                 [IPAddress.Parse("127.0.0.1"), IPAddress.Parse("127.0.0.2"), IPAddress.Parse("127.0.0.3"), IPAddress.Parse("127.0.0.4")]);
 
@@ -686,7 +696,7 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
                     "bindings:",
                     "  - id: orders-binding",
                     "    source: drasi-server",
-                    "    server: http://drasi.test",
+                    $"    server: {localServices.BaseAddress.AbsoluteUri}",
                     "    instanceId: east",
                     "    queryId: orders",
                     "    deliveryMode: converge-latest",
@@ -968,8 +978,13 @@ internal sealed class LocalClusterServices : IAsyncDisposable
 
     public Uri BaseAddress { get; }
     public LocalGatewayService Gateway { get; }
+    public TaskCompletionSource SnapshotRequested { get; init; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource ReleaseSnapshot { get; init; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public static async Task<LocalClusterServices> StartAsync(CancellationToken cancellationToken)
+    public static async Task<LocalClusterServices> StartAsync(
+        CancellationToken cancellationToken,
+        bool authoritativeSnapshot,
+        DrasiSnapshotFailure snapshotFailure = DrasiSnapshotFailure.ServiceUnavailable)
     {
         var gateway = new LocalGatewayService();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -979,15 +994,38 @@ internal sealed class LocalClusterServices : IAsyncDisposable
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
         var application = builder.Build();
+        var snapshotRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSnapshot = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var snapshotReads = 0;
 
         application.MapGet("/api/v1/instances", () =>
             Results.Content("{\"success\":true,\"data\":[{\"id\":\"east\"}],\"error\":null}", JsonContentType));
         application.MapGet("/api/v1/instances/east/queries", () =>
-            Results.Content("{\"success\":true,\"data\":[{\"id\":\"orders\"}],\"error\":null}", JsonContentType));
-        application.MapGet("/api/v1/instances/east/queries/orders/results", () =>
-            Results.Content("{\"success\":true,\"data\":[],\"error\":null}", JsonContentType));
+            Results.Content(authoritativeSnapshot
+                ? "{\"success\":true,\"data\":[{\"id\":\"orders\"}],\"error\":null}"
+                : "{\"success\":true,\"data\":[{\"id\":\"unbound-orders\"}],\"error\":null}", JsonContentType));
+        application.MapGet("/api/v1/instances/east/queries/orders/results", async (HttpContext context) =>
+        {
+            if (Interlocked.Increment(ref snapshotReads) == 1)
+            {
+                if (snapshotFailure == DrasiSnapshotFailure.ServiceUnavailable)
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+                context.Response.ContentType = JsonContentType;
+                context.Response.ContentLength = 1024;
+                await context.Response.WriteAsync("{\"success\":true,\"data\":[", context.RequestAborted)
+                    .ConfigureAwait(false);
+                await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+                return Results.Empty;
+            }
+            snapshotRequested.TrySetResult();
+            await releaseSnapshot.Task.WaitAsync(context.RequestAborted).ConfigureAwait(false);
+            return Results.Content(
+                "{\"success\":true,\"data\":[{\"orderId\":\"snapshot-order\",\"state\":\"ready\"}],\"error\":null}",
+                JsonContentType);
+        });
         application.MapGet(
-            "/api/v1/instances/east/queries/orders/attach",
+            "/api/v1/instances/east/queries/{queryId}/attach",
             async (HttpContext context) =>
             {
                 context.Response.ContentType = "text/event-stream";
@@ -1009,7 +1047,11 @@ internal sealed class LocalClusterServices : IAsyncDisposable
         var server = application.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>();
         var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault()
             ?? throw new InvalidOperationException("The local fake Drasi/Gateway server did not publish its dynamic address.");
-        return new LocalClusterServices(application, new Uri(address), gateway);
+        return new LocalClusterServices(application, new Uri(address), gateway)
+        {
+            SnapshotRequested = snapshotRequested,
+            ReleaseSnapshot = releaseSnapshot
+        };
     }
 
     public async ValueTask DisposeAsync()

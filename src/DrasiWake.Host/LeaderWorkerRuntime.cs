@@ -34,7 +34,15 @@ public sealed class LeaderWorkerRuntime(
 
         stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         await _preparation.PrepareBeforeRecoveryAsync(stopping.Token).ConfigureAwait(false);
-        await _recovery.RecoverAsync(stopping.Token, enqueueDispatchableItems: false).ConfigureAwait(false);
+        try
+        {
+            await _recovery.RecoverAsync(stopping.Token, enqueueDispatchableItems: false).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            !stopping.IsCancellationRequested && RetryableLeaderRecoveryException.IsTransient(exception))
+        {
+            throw new RetryableLeaderRecoveryException(exception);
+        }
         foreach (var worker in _workers)
         {
             stopping.Token.ThrowIfCancellationRequested();
@@ -79,4 +87,20 @@ public sealed class LeaderWorkerRuntime(
         if (!cancellationToken.IsCancellationRequested)
             throw new InvalidOperationException("A leader epoch worker completed unexpectedly.");
     }
+}
+
+internal sealed class RetryableLeaderRecoveryException(Exception innerException)
+    : Exception("Leader recovery encountered a transient upstream failure.", innerException)
+{
+    public static bool IsTransient(Exception exception) => exception switch
+    {
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.RequestTimeout or
+            System.Net.HttpStatusCode.TooManyRequests or System.Net.HttpStatusCode.BadGateway or
+            System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout } => true,
+        HttpRequestException { StatusCode: null, HttpRequestError: HttpRequestError.ConnectionError or
+            HttpRequestError.NameResolutionError or HttpRequestError.ResponseEnded } => true,
+        HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded } => true,
+        OperationCanceledException { InnerException: TimeoutException } => true,
+        _ => false
+    };
 }

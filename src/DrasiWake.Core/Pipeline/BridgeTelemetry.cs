@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Collections.Concurrent;
 using DrasiWake.Core.Domain;
 
 namespace DrasiWake.Core.Pipeline;
@@ -27,6 +28,101 @@ public static class BridgeTelemetry
     private static readonly Counter<long> ExecutionStatusFailures = Meter.CreateCounter<long>("drasiwake.wakes.execution_status.failures");
     private static readonly Histogram<double> QueueAge = Meter.CreateHistogram<double>("drasiwake.outbox.queue.age", "ms");
     private static readonly Histogram<double> AcceptanceLatency = Meter.CreateHistogram<double>("drasiwake.wakes.acceptance.latency", "ms");
+    private static readonly Counter<long> RaftLeaderChanges = Meter.CreateCounter<long>("drasiwake.raft.leader.changes");
+    private static readonly Counter<long> RaftMembership = Meter.CreateCounter<long>("drasiwake.raft.membership");
+    private static readonly Counter<long> RaftSnapshots = Meter.CreateCounter<long>("drasiwake.raft.snapshots");
+    private static readonly Counter<long> RaftApplies = Meter.CreateCounter<long>("drasiwake.raft.apply");
+    private static readonly Histogram<double> RaftSnapshotDuration = Meter.CreateHistogram<double>("drasiwake.raft.snapshot.duration", "ms");
+    private static readonly Histogram<double> RaftApplyDuration = Meter.CreateHistogram<double>("drasiwake.raft.apply.duration", "ms");
+    private static readonly Histogram<double> RaftRecoveryDuration = Meter.CreateHistogram<double>("drasiwake.raft.leader.recovery.duration", "ms");
+    private static readonly Histogram<double> RaftFailoverDuration = Meter.CreateHistogram<double>("drasiwake.raft.failover.duration", "ms");
+    private static readonly Histogram<double> RaftCatchupDuration = Meter.CreateHistogram<double>("drasiwake.raft.follower.catchup.duration", "ms");
+    private static readonly ConcurrentDictionary<long, Func<RaftNodeObservation>> RaftNodes = new();
+    private static long nextRaftNode;
+    private static readonly ObservableGauge<long> RaftRole = Meter.CreateObservableGauge(
+        "drasiwake.raft.node.role", () => ObserveRaftNodes(static node =>
+            new Measurement<long>(1, new KeyValuePair<string, object?>("role", node.Role))));
+    private static readonly ObservableGauge<long> RaftQuorum = Meter.CreateObservableGauge(
+        "drasiwake.raft.quorum", () => ObserveRaftNodes(static node => new Measurement<long>(node.HasQuorum ? 1 : 0)));
+    private static readonly ObservableGauge<long> RaftWritable = Meter.CreateObservableGauge(
+        "drasiwake.raft.writable", () => ObserveRaftNodes(static node =>
+            new Measurement<long>(node.IsLeader && node.HasQuorum ? 1 : 0)));
+    private static readonly ObservableGauge<long> RaftCommitLag = Meter.CreateObservableGauge(
+        "drasiwake.raft.commit.lag", () => ObserveRaftNodes(static node =>
+            new Measurement<long>(Math.Max(0, node.LastIndex - node.CommittedIndex))), "{entry}");
+    private static readonly ObservableGauge<long> RaftApplyLag = Meter.CreateObservableGauge(
+        "drasiwake.raft.apply.lag", () => ObserveRaftNodes(static node =>
+            new Measurement<long>(Math.Max(0, node.CommittedIndex - node.AppliedIndex))), "{entry}");
+    private static readonly ObservableGauge<long> RaftFollowerCatchupLag = Meter.CreateObservableGauge(
+        "drasiwake.raft.follower.catchup.lag", () => ObserveRaftNodes(static node =>
+            new Measurement<long>(node.IsLeader ? 0 : Math.Max(0, node.CommittedIndex - node.AppliedIndex))), "{entry}");
+
+    public static Activity? StartLeaderRecovery() => ActivitySource.StartActivity("raft.leader.recovery");
+
+    public static Activity? StartMembership(bool add, string? endpoint)
+    {
+        var activity = ActivitySource.StartActivity("raft.membership");
+        activity?.SetTag("operation", add ? "add" : "remove");
+        activity?.SetTag("member.id", StableId(endpoint ?? string.Empty));
+        return activity;
+    }
+
+    public static void RecordMembership(bool add, string result)
+        => RaftMembership.Add(1, new TagList { { "operation", add ? "add" : "remove" }, { "result", result } });
+
+    public static void RecordLeaderChange() => RaftLeaderChanges.Add(1);
+
+    public static void RecordLeaderRecovery(TimeSpan duration, string result)
+        => RaftRecoveryDuration.Record(duration.TotalMilliseconds, new TagList { { "result", result } });
+
+    public static void RecordFailover(TimeSpan duration) => RaftFailoverDuration.Record(duration.TotalMilliseconds);
+
+    public static void RecordFollowerCatchup(TimeSpan duration) => RaftCatchupDuration.Record(duration.TotalMilliseconds);
+
+    public static void RecordRaftApply(TimeSpan duration, string result)
+    {
+        var tags = new TagList { { "result", result } };
+        RaftApplies.Add(1, tags);
+        RaftApplyDuration.Record(duration.TotalMilliseconds, tags);
+    }
+
+    public static void RecordRaftSnapshot(bool restore, TimeSpan duration, string result)
+    {
+        var tags = new TagList { { "operation", restore ? "restore" : "export" }, { "result", result } };
+        RaftSnapshots.Add(1, tags);
+        RaftSnapshotDuration.Record(duration.TotalMilliseconds, tags);
+    }
+
+    public static IDisposable RegisterRaftNode(Func<RaftNodeObservation> observe)
+    {
+        ArgumentNullException.ThrowIfNull(observe);
+        var id = Interlocked.Increment(ref nextRaftNode);
+        RaftNodes[id] = observe;
+        return new RaftNodeRegistration(id);
+    }
+
+    private static IEnumerable<Measurement<long>> ObserveRaftNodes(
+        Func<RaftNodeObservation, Measurement<long>> measurement)
+    {
+        foreach (var observe in RaftNodes.Values)
+        {
+            RaftNodeObservation node;
+            try { node = observe(); }
+            catch (ObjectDisposedException) { continue; }
+            yield return measurement(node);
+        }
+    }
+
+    public readonly record struct RaftNodeObservation(
+        bool IsLeader, bool HasQuorum, bool HasKnownLeader, long LastIndex, long CommittedIndex, long AppliedIndex)
+    {
+        public string Role => IsLeader ? "leader" : HasKnownLeader ? "follower" : "electing";
+    }
+
+    private sealed class RaftNodeRegistration(long id) : IDisposable
+    {
+        public void Dispose() => RaftNodes.TryRemove(id, out _);
+    }
 
     public static Activity? StartReconciliation(QueryIdentity query)
     {
