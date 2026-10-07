@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Hosting;
-using DrasiWake.Core.Abstractions;
 using DrasiWake.Persistence.SonnetDB;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,83 +8,84 @@ public sealed class HostStartupValidator(
     DrasiWakeHostSettings settings,
     DrasiWake.Core.Contracts.ContractRegistryLoader registryLoader,
     DrasiWake.Core.Contracts.ContractRegistryManager registryManager,
-    IDbContextFactory<BridgeDbContext> contextFactory,
-    IBridgeStore store) : IHostedService, IDisposable
+    IDbContextFactory<BridgeDbContext> contextFactory) : IHostedLifecycleService, IDisposable
 {
+    private readonly SemaphoreSlim startupGate = new(1, 1);
     private FileStream? databaseLease;
+    private bool started;
+
+    public Task StartingAsync(CancellationToken cancellationToken) => StartAsync(cancellationToken);
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        settings.Validate();
-        var candidate = await registryLoader.LoadCandidateAsync(settings.RegistryPath, cancellationToken);
-        if (!candidate.IsValid || candidate.Registry is null)
-        {
-            var errors = string.Join("; ", candidate.Errors.Select(error => error.Code));
-            throw new InvalidOperationException($"Contract registry is invalid: {errors}");
-        }
-
-        var maximumRetryAgeByTarget = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
-        foreach (var binding in candidate.Registry.Bindings)
-        {
-            if (!settings.OpenClawTargets.TryGetValue(binding.OpenClawTarget, out var target))
-            {
-                throw new InvalidOperationException(
-                    $"Binding '{binding.Id}' references unknown OpenClaw target '{binding.OpenClawTarget}'.");
-            }
-
-            if (!maximumRetryAgeByTarget.TryGetValue(binding.OpenClawTarget, out var maximumRetryAge) ||
-                binding.Retry.MaxAge > maximumRetryAge)
-            {
-                maximumRetryAgeByTarget[binding.OpenClawTarget] = binding.Retry.MaxAge;
-            }
-        }
-
-        foreach (var (targetName, maximumRetryAge) in maximumRetryAgeByTarget)
-        {
-            if (settings.OpenClawTargets[targetName].GatewayIdempotencyRetention < maximumRetryAge)
-            {
-                throw new InvalidOperationException(
-                    $"OpenClaw target '{targetName}' idempotency retention must cover its bindings' maximum outbox retry age.");
-            }
-        }
-
-        if (!registryManager.TryActivate(candidate))
-            throw new InvalidOperationException("Contract registry activation failed.");
-
-        Directory.CreateDirectory(settings.DatabasePath);
-        var leasePath = Path.Combine(settings.DatabasePath, ".drasiwake.owner.lock");
+        await startupGate.WaitAsync(cancellationToken);
         try
         {
-            databaseLease = new FileStream(leasePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            if (started)
+                return;
+
+            settings.Validate();
+            if (settings.Cluster.Mode == RaftClusterMode.Cluster)
+            {
+                using var certificate = settings.Cluster.LoadServerCertificate();
+                settings.Cluster.ValidateServerCertificateNames(certificate);
+            }
+
+            var candidate = await registryLoader.LoadCandidateAsync(settings.RegistryPath, cancellationToken);
+            if (!candidate.IsValid || candidate.Registry is null)
+            {
+                var errors = string.Join("; ", candidate.Errors.Select(error => error.Code));
+                throw new InvalidOperationException($"Contract registry is invalid: {errors}");
+            }
+
+            foreach (var binding in candidate.Registry.Bindings)
+            {
+                if (!settings.OpenClawTargets.TryGetValue(binding.OpenClawTarget, out var target))
+                {
+                    throw new InvalidOperationException(
+                        $"Binding '{binding.Id}' references unknown OpenClaw target '{binding.OpenClawTarget}'.");
+                }
+
+                if (target.GatewayIdempotencyRetention < binding.Retry.MaxAge)
+                {
+                    throw new InvalidOperationException(
+                        $"OpenClaw target '{binding.OpenClawTarget}' idempotency retention must cover its bindings' maximum outbox retry age.");
+                }
+            }
+
+            if (!registryManager.TryActivate(candidate))
+                throw new InvalidOperationException("Contract registry activation failed.");
+
+            Directory.CreateDirectory(settings.DatabasePath);
+            var leasePath = Path.Combine(settings.DatabasePath, ".drasiwake.owner.lock");
+            try
+            {
+                databaseLease = new FileStream(leasePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidOperationException("Another active DrasiWake host owns this database directory.", exception);
+            }
+
+            await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+            await context.Database.MigrateAsync(cancellationToken);
+            started = true;
         }
-        catch (IOException exception)
+        catch
         {
-            throw new InvalidOperationException("Another active DrasiWake host owns this database directory.", exception);
+            databaseLease?.Dispose();
+            databaseLease = null;
+            throw;
         }
-
-        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await context.Database.MigrateAsync(cancellationToken);
-
-        var targetByBindingId = candidate.Registry.Bindings.ToDictionary(
-            binding => binding.Id,
-            binding => binding.OpenClawTarget,
-            StringComparer.Ordinal);
-        var configuredTargetNames = settings.OpenClawTargets.Keys.ToHashSet(StringComparer.Ordinal);
-        var maximumRetryAgeByBindingId = candidate.Registry.Bindings.ToDictionary(
-            binding => binding.Id,
-            binding => binding.Retry.MaxAge,
-            StringComparer.Ordinal);
-        var idempotencyRetentionByTarget = settings.OpenClawTargets.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.GatewayIdempotencyRetention,
-            StringComparer.Ordinal);
-        await store.EnsureOpenClawTargetsAsync(
-            targetByBindingId,
-            configuredTargetNames,
-            maximumRetryAgeByBindingId,
-            idempotencyRetentionByTarget,
-            cancellationToken);
+        finally
+        {
+            startupGate.Release();
+        }
     }
+
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public Task StopAsync(CancellationToken cancellationToken)
     {

@@ -9,6 +9,7 @@ public sealed class BridgeDbContext(DbContextOptions<BridgeDbContext> options) :
     public DbSet<SnapshotCheckpoint> SnapshotCheckpoints => Set<SnapshotCheckpoint>();
     public DbSet<KeyMapping> KeyMappings => Set<KeyMapping>();
     public DbSet<WakeOutbox> WakeOutbox => Set<WakeOutbox>();
+    public DbSet<RaftProjectionState> RaftProjectionStates => Set<RaftProjectionState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -57,9 +58,26 @@ public sealed class BridgeDbContext(DbContextOptions<BridgeDbContext> options) :
             entity.Property(item => item.InvocationId).HasMaxLength(512);
             entity.Property(item => item.TraceId).HasMaxLength(256);
             entity.Property(item => item.LastErrorCode).HasMaxLength(256);
+            entity.Property(item => item.ClaimCommandId).HasMaxLength(64);
             entity.Property(item => item.Version).IsConcurrencyToken();
             entity.HasIndex(item => new { item.NextAttemptAtUtc, item.CreatedAtUtc, item.Id });
             entity.HasIndex(item => item.IdempotencyKey).IsUnique();
+        });
+
+        modelBuilder.Entity<RaftProjectionState>(entity =>
+        {
+            entity.ToTable("RaftProjectionState", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_RaftProjectionState_LastAppliedIndex_NonNegative",
+                    "\"LastAppliedIndex\" >= 0");
+                table.HasCheckConstraint("CK_RaftProjectionState_Singleton", "\"Id\" = 1");
+            });
+            entity.HasKey(state => state.Id);
+            entity.Property(state => state.Id).ValueGeneratedNever();
+            entity.Property(state => state.LastAppliedIndex).IsRequired();
+            entity.Property(state => state.LastAppliedCommandId).HasMaxLength(64);
+            entity.Property(state => state.ConfigurationFingerprint).HasMaxLength(128);
         });
     }
 }

@@ -3,6 +3,7 @@ using System;
 using DrasiWake.Persistence.SonnetDB;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DrasiWake.Persistence.SonnetDB.Migrations
 {
     [DbContext(typeof(BridgeDbContext))]
-    partial class BridgeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261007022259_AddRaftProjectionState")]
+    partial class AddRaftProjectionState
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
@@ -152,10 +155,6 @@ namespace DrasiWake.Persistence.SonnetDB.Migrations
                     b.Property<string>("ContractVersion")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("STRING");
-
-                    b.Property<string>("ClaimCommandId")
-                        .HasMaxLength(64)
                         .HasColumnType("STRING");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")

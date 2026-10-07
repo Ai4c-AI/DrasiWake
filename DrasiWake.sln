@@ -33,6 +33,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.AppHost", "src\Dr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.LocalEnvironment.Tests", "tests\DrasiWake.LocalEnvironment.Tests\DrasiWake.LocalEnvironment.Tests.csproj", "{E24F060A-B918-492A-93E3-7CAC96C111C9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.Persistence.Raft", "src\DrasiWake.Persistence.Raft\DrasiWake.Persistence.Raft.csproj", "{46960713-BF15-419B-8A5D-7A0EE0E30EA6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.Persistence.Raft.Tests", "tests\DrasiWake.Persistence.Raft.Tests\DrasiWake.Persistence.Raft.Tests.csproj", "{FFB74130-D473-4E62-A3E5-77AA24E612FA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -199,6 +203,30 @@ Global
 		{E24F060A-B918-492A-93E3-7CAC96C111C9}.Release|x64.Build.0 = Release|Any CPU
 		{E24F060A-B918-492A-93E3-7CAC96C111C9}.Release|x86.ActiveCfg = Release|Any CPU
 		{E24F060A-B918-492A-93E3-7CAC96C111C9}.Release|x86.Build.0 = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|x64.Build.0 = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Debug|x86.Build.0 = Debug|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|x64.ActiveCfg = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|x64.Build.0 = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|x86.ActiveCfg = Release|Any CPU
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6}.Release|x86.Build.0 = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|x64.Build.0 = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Debug|x86.Build.0 = Debug|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x64.ActiveCfg = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x64.Build.0 = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x86.ActiveCfg = Release|Any CPU
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -217,5 +245,7 @@ Global
 		{3CAA8A30-E064-471E-8365-889C5A0456DB} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{3978BFC0-3C3E-494F-A09F-1496A0F1A466} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{E24F060A-B918-492A-93E3-7CAC96C111C9} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{46960713-BF15-419B-8A5D-7A0EE0E30EA6} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{FFB74130-D473-4E62-A3E5-77AA24E612FA} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

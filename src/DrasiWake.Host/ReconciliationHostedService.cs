@@ -1,7 +1,5 @@
 using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Pipeline;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace DrasiWake.Host;
 
@@ -10,17 +8,18 @@ public sealed class ReconciliationHostedService(
     SignalInbox inbox,
     RecoveryCoordinator recovery,
     DrasiWakeHostSettings settings,
-    TimeProvider timeProvider,
-    ILogger<ReconciliationHostedService> logger) : IHostedService, IDisposable
+    TimeProvider timeProvider) : ILeaderEpochWorker, IDisposable
 {
     private CancellationTokenSource? stopping;
     private Task? periodicTask;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task Completion => periodicTask ?? Task.CompletedTask;
+
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        await recovery.RecoverAsync(cancellationToken);
-        stopping = new CancellationTokenSource();
+        stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         periodicTask = RunPeriodicAsync(stopping.Token);
+        return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -45,39 +44,16 @@ public sealed class ReconciliationHostedService(
         using var timer = new PeriodicTimer(settings.ReconciliationInterval, timeProvider);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            try
+            var visibleQueries = await changeSource.EnumerateQueriesAsync(cancellationToken);
+            foreach (var query in visibleQueries)
+                BridgeTelemetry.RecordQueryVisible(query);
+            var queries = inbox.TakeDirtyQueries()
+                .Concat(visibleQueries)
+                .Distinct()
+                .ToArray();
+            foreach (var query in queries)
             {
-                var visibleQueries = await changeSource.EnumerateQueriesAsync(cancellationToken);
-                foreach (var query in visibleQueries)
-                    BridgeTelemetry.RecordQueryVisible(query);
-                var queries = inbox.TakeDirtyQueries()
-                    .Concat(visibleQueries)
-                    .Distinct()
-                    .ToArray();
-                foreach (var query in queries)
-                {
-                    try
-                    {
-                        await recovery.ReconcileAfterReconnectAsync(query, cancellationToken);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
-                    catch (Exception exception)
-                    {
-                        logger.LogWarning("Periodic snapshot reconciliation failed for query {QueryId} ({ErrorType}).",
-                            BridgeTelemetry.StableId(query.QueryId), exception.GetType().Name);
-                    }
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError("Periodic query enumeration failed ({ErrorType}).", exception.GetType().Name);
+                await recovery.ReconcileAfterReconnectAsync(query, cancellationToken);
             }
         }
     }

@@ -23,6 +23,15 @@
 - 集群所有节点必须使用一致的 binding、Drasi、Gateway 功能配置指纹和兼容的应用命令版本。
 - NodeId、本地路径、证书和令牌不得进入业务 Raft 命令。
 
+## 执行顺序调整：移除本地 IBridgeStore 写入旁路
+
+持久化投影实现的审查发现，旧 `SonnetBridgeStore` 仍通过 `IBridgeStore` 暴露本地 dispatch claim 和 recovery 写入。用户选择不保留临时本地适配器，并同意先推进 Raft executor/store 基础，再恢复原后续顺序。
+
+- Task 3、Task 4 基于已经完成的复制投影 DTO/API 继续实施。
+- Task 4 必须让 `RaftBridgeStore` 成为唯一业务 `IBridgeStore` 实现；`SonnetBridgeStore` 只提供投影读、已提交命令应用和快照操作，不得继续实现或被注册为 `IBridgeStore`。所有旧单节点行为也必须经同一 Raft 命令路径，不得添加无共识本地回退。
+- Task 5 必须将 Host 的 `IBridgeStore` 注入绑定到 `RaftBridgeStore`，状态机只使用具体投影 API；通过注册测试验证应用层不能绕过 Raft。
+- 在 Task 4/5 的实现和审查通过前，该接口旁路审查项保持未关闭；关闭后再进入 Task 6。
+
 ---
 
 ## 文件职责图
@@ -230,30 +239,27 @@
 - `DotNextRaftCommandExecutor` 使用统一的有版本 `JsonSerializerOptions` 序列化 envelope，等待 `IRaftCluster.ReplicateAsync` 共识复制成功；非 Leader 或无可写多数派时拒绝提交，不得直接写入本地 SonnetDB。
 - 状态机只接受受支持版本的命令，将 `LogEntry.Index` 传给本地投影；通过 DotNext binary reader/writer API 保存/恢复 `BridgeStoreSnapshot`。
 
-- [ ] **步骤 1：先写命令序列化失败测试。** 验证每种命令类型及 payload 往返一致、`SchemaVersion` 明确、相同规范 payload 生成相同 command ID、时间戳或 payload 改变后 ID 不同、错误/未知版本被拒绝，并确认序列化内容不含节点密钥或本地路径。
+- [x] **步骤 1：先写命令序列化失败测试。** 验证每种命令类型及 payload 往返一致、`SchemaVersion` 明确、相同规范 payload 生成相同 command ID、时间戳或 payload 改变后 ID 不同、错误/未知版本被拒绝，并确认序列化内容不含节点密钥或本地路径。
 
-- [ ] **步骤 2：运行 Raft 测试类，确认新增测试先失败。**
+- [x] **步骤 2：运行 Raft 测试类，确认新增测试先失败。**
 
   运行：`dotnet test --project tests\DrasiWake.Persistence.Raft.Tests\DrasiWake.Persistence.Raft.Tests.csproj -c Release --filter-class DrasiWake.Persistence.Raft.Tests.RaftBridgeStateMachineTests`
 
   预期：先因 Raft 项目和状态机尚不存在而失败；步骤 1 同时创建测试项目和测试文件。
 
-- [ ] **步骤 3：创建 Raft 与测试项目。** Raft 项目引用 `DrasiWake.Core`、`DrasiWake.Persistence.SonnetDB` 和中央固定版本的 DotNext.AspNetCore.Cluster 6.9.0。测试项目采用现有 .NET 10、xUnit v3 和测试运行器配置。
+- [x] **步骤 3：创建 Raft 与测试项目。** Raft 项目引用 `DrasiWake.Core`、`DrasiWake.Persistence.SonnetDB` 和中央固定版本的 DotNext.AspNetCore.Cluster 6.9.0。测试项目采用现有 .NET 10、xUnit v3 和测试运行器配置。
 
-- [ ] **步骤 4：实现 executor 和状态机。** 以 SlikCache 6.9.0 中的 `SimpleStateMachine`、`IRaftCluster.ReplicateAsync`、`WriteAheadLog.Options`、snapshot reader/writer 和 `UseStateMachine<T>` 为 API 参考。`ApplyAsync` 必须把每个已提交索引与本地投影原子保存；snapshot 必须包含完整投影和索引；恢复先校验快照，再应用后续日志。
+- [x] **步骤 4：实现 executor 和状态机。** 以 SlikCache 6.9.0 中的 `SimpleStateMachine`、`IRaftCluster.ReplicateAsync`、`WriteAheadLog.Options`、snapshot reader/writer 和 `UseStateMachine<T>` 为 API 参考。`ApplyAsync` 必须把每个已提交索引与本地投影原子保存；snapshot 必须包含完整投影和索引；恢复先校验快照，再应用后续日志；payload-less 日志项只推进索引，不作为业务命令反序列化。
 
-- [ ] **步骤 5：测试状态机重放和快照回调。** 使用临时 Raft 目录启动单节点 DotNext Host，提交两条命令、关闭并重新打开节点，验证投影和索引恢复。另测畸形日志 payload 和投影事务失败；应用失败的节点不得报告追平。
+- [x] **步骤 5：测试状态机重放和快照回调。** 使用临时 Raft 目录启动单节点 DotNext Host，提交两条命令、关闭并重新打开节点到一个全新的 SonnetDB 投影，验证 WAL 重放恢复投影和索引。另测 payload-less 日志项、畸形日志 payload、投影事务失败和完整 snapshot 回调往返；应用失败的节点不得报告追平。
 
-- [ ] **步骤 6：运行 Raft 与持久化测试并提交。**
+- [x] **步骤 6：运行 Raft 与持久化测试。**
 
   运行：`dotnet test --project tests\DrasiWake.Persistence.Raft.Tests\DrasiWake.Persistence.Raft.Tests.csproj -c Release`
 
   预期：命令序列化、状态机和 snapshot 测试通过。
 
-  ```text
-  git add DrasiWake.sln src/DrasiWake.Persistence.Raft tests/DrasiWake.Persistence.Raft.Tests
-  git commit -m "feat: add DotNext bridge state machine"
-  ```
+- [ ] **提交 Task 3 变更。** 与 Task 2/4 共享投影代码仍在同一未提交工作区；按最终集成提交边界一并整理。
 
 ## 任务 4：将所有 `IBridgeStore` 写操作改为经 Raft 提交
 
@@ -267,20 +273,22 @@
 **接口：**
 
 - `RaftBridgeStore : IBridgeStore` 依赖 `IRaftCommandExecutor` 和本地 `SonnetBridgeStore`。
+- 在 SonnetDB 项目引入投影专用 `IRaftBridgeProjection`，只暴露已提交命令/空日志索引应用、快照操作和只读恢复/结果查询；`RaftBridgeStateMachine` 与 `RaftBridgeStore` 依赖此接口。
+- `SonnetBridgeStore` 只实现 `IRaftBridgeProjection`，不得继续实现 `IBridgeStore` 或暴露旧本地业务写方法；不得保留临时本地写适配器或绕过共识的业务写入路径。
 - 每个写方法映射为一条 `ReplicatedBridgeCommand`；等待共识提交和本地应用后，才从本地投影读取结果。
-- `LoadDispatchableAsync` 先读取候选项，再复制包含准确 ID 和 `nowUtc` 的 claim 命令；只返回已提交为 `Dispatching` 的记录。
+- `LoadDispatchableAsync` 先读取候选项，再复制包含准确 ID、唯一 claim ID 和 `nowUtc` 的 claim 命令；仅当 projection 记录其 claim 所有权时才返回对应记录。已过期/陈旧 claim 必须安全 no-op，不得阻塞状态机。
 - `LoadRecoveryStateAsync` 先用 Leader 提供的 UTC 时间提交 recovery 命令，再调用只读 `ReadRecoveryStateAsync`。
 - `EnsureOpenClawTargetsAsync` 是复制命令；静态 target/保留时长校验仍由 `HostStartupValidator` 执行。
 
-- [ ] **步骤 1：用 capturing executor 先写失败测试。** 测试 executor 记录 envelope、以本地投影的下一个索引应用命令，并以无返回值的 `ValueTask` 完成。对每个 `IBridgeStore` 写操作断言命令类型及 payload；executor 失败时，投影不得改变。
+- [x] **步骤 1：用 capturing executor 先写失败测试。** 测试 executor 记录 envelope、以本地投影的下一个索引应用命令，并以无返回值的 `ValueTask` 完成。对每个 `IBridgeStore` 写操作断言命令类型及 payload；executor 失败时，投影不得改变。
 
-- [ ] **步骤 2：运行适配器测试，确认测试先失败。**
+- [x] **步骤 2：运行适配器测试，确认测试先失败。**
 
   运行：`dotnet test --project tests\DrasiWake.Persistence.Raft.Tests\DrasiWake.Persistence.Raft.Tests.csproj -c Release --filter-class DrasiWake.Persistence.Raft.Tests.RaftBridgeStoreTests`
 
-- [ ] **步骤 3：逐方法实现适配器。** 覆盖创建/更新 pending wake、拒绝记录、supersede、dispatch claim、原子 acceptance/checkpoint、执行状态、retry、dead-letter、中断分发恢复和 target 回填。命令需包含所有时间戳与标识符，followers 不得自行读取墙上时钟或生成本地 ID。使用命令类型和规范化 JSON payload 的 SHA-256 小写十六进制摘要生成 `CommandId`；序列化前按键排序字典。
+- [x] **步骤 3：逐方法实现适配器。** 覆盖创建/更新 pending wake、拒绝记录、supersede、dispatch claim、原子 acceptance/checkpoint、执行状态、retry、dead-letter、中断分发恢复和 target 回填。命令需包含所有时间戳与标识符，followers 不得自行读取墙上时钟或生成本地 ID。使用命令类型和规范化 JSON payload 的 SHA-256 小写十六进制摘要生成 `CommandId`；序列化前按键排序字典。
 
-- [ ] **步骤 4：验证关键不变量。** claim 提交失败不得产生可发给 Gateway 的结果；重复 acceptance 不得替换原 invocation/checkpoint；恢复必须保留同一个幂等键；任何副本不得观察到缺少匹配 checkpoint 的 `Accepted` 状态。
+- [x] **步骤 4：验证关键不变量。** claim 提交失败不得产生可发给 Gateway 的结果；重复 acceptance 不得替换原 invocation/checkpoint；恢复必须保留同一个幂等键；任何副本不得观察到缺少匹配 checkpoint 的 `Accepted` 状态。executor 等待本地应用至提交索引；并发 stale claim 安全 no-op，且每个调用只返回自己 claim 的记录。
 
 - [ ] **步骤 5：运行 Raft 和 SonnetDB 测试并提交。**
 
@@ -290,10 +298,7 @@
 
   预期：两个测试项目全部通过。
 
-  ```text
-  git add src/DrasiWake.Persistence.Raft src/DrasiWake.Persistence.SonnetDB tests/DrasiWake.Persistence.Raft.Tests
-  git commit -m "feat: replicate bridge store mutations"
-  ```
+- [ ] **提交 Task 4 变更。** 与 Task 2/3 共享的投影代码仍在同一未提交工作区；按最终集成提交边界一并整理。
 
 ## 任务 5：托管集群并保持单节点启动兼容
 
@@ -325,7 +330,7 @@
 
 - [ ] **步骤 5：更新 `appsettings.json` 和 Host 测试配置辅助方法。** 保持配置文件不含密钥，示例配置单节点本地拓扑并记录环境变量键名。验证旧配置仍默认启动单节点模式且生产使用 Raft Store。
 
-- [ ] **步骤 6：运行 Host 启动测试和 Release build。**
+- [x] **步骤 6：运行 Host 启动测试和 Release build。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.HostStartupTests`
 
@@ -333,10 +338,7 @@
 
   预期：两个命令成功；既有 `Valid_registry_migrates_database_and_database_directory_has_single_owner` 测试继续通过。
 
-  ```text
-  git add DrasiWake.sln src/DrasiWake.Host tests/DrasiWake.IntegrationTests/HostStartupTests.cs
-  git commit -m "feat: host DrasiWake Raft cluster"
-  ```
+- [ ] **提交 Task 5 变更。** 与 Task 2–4 一起整理最终提交边界。
 
 ## 任务 6：按领导权 epoch 门控并重新创建 Bridge worker
 
@@ -359,17 +361,17 @@
 - `LeaderWorkerRuntime.StartAsync(CancellationToken)` 先执行恢复和周期对账，再启用 Bridge 接收/分发；`StopAsync(CancellationToken)` 取消该 epoch 的任务并释放 scope。
 - 每个 epoch 的 scope 创建新的 `SignalInbox`、`SessionPartitioner`、`SnapshotReconciler`、`RecoveryCoordinator`、`BridgeHostedService` 和 `ReconciliationHostedService`。停止后不得复用一次性 inbox/partitioner。
 
-- [ ] **步骤 1：先写 fake-leadership 生命周期测试。** 验证 follower 不建立 Drasi watch 或调用 Gateway；一个 Leader epoch 只创建一个 runtime；失去 quorum 后 runtime 取消；新 term 创建新 runtime；上一 runtime 完成慢速关闭前不得启动下一 runtime。
+- [x] **步骤 1：先写 fake-leadership 生命周期测试。** 验证 follower 不建立 Drasi watch 或调用 Gateway；一个 Leader epoch 只创建一个 runtime；失去 quorum 后 runtime 取消；新 term 创建新 runtime；上一 runtime 完成慢速关闭前不得启动下一 runtime。
 
-- [ ] **步骤 2：运行生命周期测试类，确认测试先失败。**
+- [x] **步骤 2：运行生命周期测试类，确认测试先失败。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.LeaderWorkerLifecycleTests`
 
-- [ ] **步骤 3：实现 Leader coordinator 和 scoped runtime。** 将 DotNext Leader 通知/消息总线状态适配为 `IRaftLeadership`。每个 term 使用独立 linked cancellation token。只有本地投影追平且集群具有可写多数派时，才可将 epoch 标记为活动。
+- [x] **步骤 3：实现 Leader coordinator 和 scoped runtime。** 将 DotNext Leader 通知/消息总线状态适配为 `IRaftLeadership`。每个 term 使用独立 linked cancellation token。只有本地投影追平且集群具有可写多数派时，才可将 epoch 标记为活动。
 
-- [ ] **步骤 4：使恢复可重复执行。** 每个 runtime 先提交中断分发恢复命令，再枚举所有可见 Drasi 查询并对权威 snapshot 对账；完成后才启动 dispatch polling 和信号接收。领导权丢失时取消必须传播；非取消异常不得被吞掉。unexpected worker failure 终止该 epoch，并使用固定错误类别记录。
+- [x] **步骤 4：使恢复可重复执行。** 每个 runtime 先提交中断分发恢复命令，再枚举所有可见 Drasi 查询并对权威 snapshot 对账；完成后才启动 dispatch polling 和信号接收。领导权丢失时取消必须传播；非取消异常不得被吞掉。unexpected worker failure 终止该 epoch，并使用固定错误类别记录。
 
-- [ ] **步骤 5：运行生命周期及既有恢复测试。**
+- [x] **步骤 5：运行生命周期及既有恢复测试。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.LeaderWorkerLifecycleTests`
 
@@ -377,10 +379,7 @@
 
   预期：只有当前 Leader 运行工作，且原恢复语义不变。
 
-  ```text
-  git add src/DrasiWake.Host src/DrasiWake.Core/Pipeline/RecoveryCoordinator.cs tests/DrasiWake.IntegrationTests
-  git commit -m "feat: gate bridge workers on Raft leadership"
-  ```
+- [ ] **提交 Task 6 变更。** 与 Task 2–5 一起整理最终提交边界。
 
 ## 任务 7：增加认证成员管理和配置兼容性检查
 
@@ -410,30 +409,25 @@
 - `ClusterConfigurationFingerprint.Create(ContractRegistry registry, Uri drasiServerUri, IReadOnlyDictionary<string, OpenClawTargetOptions> targets, OpenClawOptions retryOptions)` 对规范化后的注册表、Drasi 身份、Gateway 逻辑名称/地址/保留时长和 retry 行为计算 SHA-256 十六进制摘要；排除密钥、节点身份、监听地址和本地目录。
 - Add 前先通过 TLS 查询候选节点；若 NodeId 已存在、配置指纹不一致或应用命令版本不兼容，则不得执行 DotNext 成员变更。Remove 由 Leader 转发并要求 quorum 提交。
 
-- [ ] **步骤 1：先写 gRPC 鉴权和成员管理失败测试。** 验证缺失、格式错误和错误令牌均被拒绝且响应不回显令牌；合法调用只调用 membership manager 一次；follower 将请求恰好转发给 Leader 一次；无 quorum 时失败；配置/版本不匹配时不调用 `AddMemberAsync`。
+- [x] **步骤 1：先写 gRPC 鉴权和成员管理失败测试。** 验证缺失、格式错误和错误令牌均被拒绝且响应不回显令牌；合法调用只调用 membership manager 一次；follower 将请求恰好转发给 Leader 一次；无 quorum 时失败；配置/版本不匹配时不调用 `AddMemberAsync`。
 
-- [ ] **步骤 2：运行成员管理测试类，确认测试先失败。**
-
-  运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.ClusterMembershipTests`
-
-- [ ] **步骤 3：实现 code-first gRPC 契约和逐请求授权。** 使用 constant-time 字节比较校验 Bearer Token。管理 listener 和候选节点兼容查询都必须使用 HTTPS。返回固定错误代码，不返回异常消息或秘密。
-
-- [ ] **步骤 4：实现指纹持久化和兼容性预检。** 初次 bootstrap 时将业务配置指纹作为集群元数据提交；重启时在 Leader 工作启动前检查指纹；Add 前调用候选节点兼容性接口，拒绝重复 NodeId、指纹不一致或命令版本不兼容。管理 RPC 不传递注册表正文或凭据。
-
-- [ ] **步骤 5：实现经 Leader 路由的 Add/Remove 和安全校验。** 使用 DotNext 持久集群配置与 `IRaftHttpCluster.AddMemberAsync`/`RemoveMemberAsync`。验证 endpoint scheme/address、重复/现存成员、移除最后一个成员、当前 Leader 和 quorum。日志只记录操作类型、成员稳定 ID、结果代码和时间。
-
-- [ ] **步骤 6：运行成员管理、Host 启动和遥测脱敏测试并提交。**
+- [x] **步骤 2：运行成员管理测试类，确认测试先失败。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.ClusterMembershipTests`
 
-  运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.TelemetryRedactionTests`
+- [x] **步骤 3：实现 code-first gRPC 契约和逐请求授权。** 使用 constant-time 字节比较校验 Bearer Token。管理 listener 和候选节点兼容查询都必须使用 HTTPS。返回固定错误代码，不返回异常消息或秘密。
+
+- [x] **步骤 4：实现指纹持久化和兼容性预检。** 初次 bootstrap 时将业务配置指纹作为集群元数据提交；重启时在 Leader 工作启动前检查指纹；Add 前调用候选节点兼容性接口，拒绝重复 NodeId、指纹不一致或命令版本不兼容。管理 RPC 不传递注册表正文或凭据。
+
+- [x] **步骤 5：实现经 Leader 路由的 Add/Remove 和安全校验。** 使用 DotNext 持久集群配置与 `IRaftHttpCluster.AddMemberAsync`/`RemoveMemberAsync`。验证 endpoint scheme/address、重复/现存成员、移除最后一个成员、当前 Leader 和 quorum。日志只记录操作类型、成员稳定 ID、结果代码和时间。
+
+- [x] **步骤 6：运行成员管理和 Host 启动测试。** 完整遥测脱敏测试留在 Task 9。
+
+  运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.ClusterMembershipTests`
 
   预期：未授权或不兼容的成员变更不产生任何效果；日志和错误响应中无凭据。
 
-  ```text
-  git add src/DrasiWake.Host tests/DrasiWake.IntegrationTests
-  git commit -m "feat: secure Raft membership management"
-  ```
+- [ ] **提交 Task 7 变更。** 与前序未提交的 Raft HA 变更一并整理提交边界。
 
 ## 任务 8：验证三节点复制、quorum 丢失和故障切换
 

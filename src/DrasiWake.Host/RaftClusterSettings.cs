@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Configuration;
 
 namespace DrasiWake.Host;
@@ -146,6 +148,10 @@ public sealed class RaftClusterSettings
 
         if (Mode == RaftClusterMode.SingleNode)
         {
+            if (ListenAddress.Scheme != Uri.UriSchemeHttp)
+                throw Invalid(
+                    "DrasiWake:Cluster:ListenAddress",
+                    "SingleNode mode requires an HTTP loopback address because TLS is only configured in Cluster mode.");
             if (!ListenAddress.IsLoopback)
                 throw Invalid("DrasiWake:Cluster:ListenAddress", "SingleNode mode requires one loopback member.");
             if (InitialMembers.Count != 1)
@@ -164,8 +170,76 @@ public sealed class RaftClusterSettings
         {
             throw Invalid("DrasiWake:Cluster:Management:Address", "must be an absolute HTTPS URI.");
         }
+        if (ManagementAddress.Port == ListenAddress.Port)
+        {
+            throw Invalid(
+                "DrasiWake:Cluster:Management:Address",
+                "must use a separate TCP port from DrasiWake:Cluster:ListenAddress.");
+        }
         if (string.IsNullOrWhiteSpace(ManagementBearerToken))
             throw Missing("DrasiWake:Cluster:Management:BearerToken");
+    }
+
+    public X509Certificate2 LoadServerCertificate()
+    {
+        if (Mode != RaftClusterMode.Cluster)
+            throw new InvalidOperationException("A TLS server certificate is only configured for Cluster mode.");
+
+        X509Certificate2 certificate;
+        try
+        {
+            certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                Path.GetFullPath(CertificatePath!),
+                CertificatePassword,
+                X509KeyStorageFlags.DefaultKeySet);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException)
+        {
+            throw new InvalidOperationException(
+                "The configured Raft TLS certificate could not be loaded.",
+                exception);
+        }
+
+        var now = DateTime.UtcNow;
+        var enhancedKeyUsage = certificate.Extensions
+            .OfType<X509EnhancedKeyUsageExtension>()
+            .SingleOrDefault();
+        if (!certificate.HasPrivateKey ||
+            now < certificate.NotBefore.ToUniversalTime() ||
+            now > certificate.NotAfter.ToUniversalTime() ||
+            (enhancedKeyUsage is not null &&
+             !enhancedKeyUsage.EnhancedKeyUsages
+                 .Cast<Oid>()
+                 .Any(oid => oid.Value == "1.3.6.1.5.5.7.3.1")))
+        {
+            certificate.Dispose();
+            throw new InvalidOperationException(
+                "The configured Raft TLS certificate must be current, include its private key, and be valid for server authentication.");
+        }
+
+        return certificate;
+    }
+
+    public void ValidateServerCertificateNames(X509Certificate2 certificate)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        if (Mode != RaftClusterMode.Cluster)
+            return;
+
+        if (!certificate.MatchesHostname(ListenAddress.DnsSafeHost, allowWildcards: true, allowCommonName: true))
+        {
+            throw Invalid(
+                "DrasiWake:Cluster:Certificate:Path",
+                "must be valid for the configured Raft listener address.");
+        }
+
+        if (ManagementAddress is null ||
+            !certificate.MatchesHostname(ManagementAddress.DnsSafeHost, allowWildcards: true, allowCommonName: true))
+        {
+            throw Invalid(
+                "DrasiWake:Cluster:Certificate:Path",
+                "must be valid for the configured management listener address.");
+        }
     }
 
     private static RaftClusterMode ReadMode(IConfiguration configuration)
@@ -279,9 +353,11 @@ public sealed class RaftClusterSettings
         => address.IsAbsoluteUri &&
             (address.Scheme == Uri.UriSchemeHttp || address.Scheme == Uri.UriSchemeHttps) &&
             !string.IsNullOrWhiteSpace(address.Host) &&
+            address.Port is > 0 and <= 65535 &&
             string.IsNullOrWhiteSpace(address.UserInfo) &&
             string.IsNullOrWhiteSpace(address.Query) &&
-            string.IsNullOrWhiteSpace(address.Fragment);
+            string.IsNullOrWhiteSpace(address.Fragment) &&
+            address.AbsolutePath is "" or "/";
 
     private static Uri Normalize(Uri address)
     {

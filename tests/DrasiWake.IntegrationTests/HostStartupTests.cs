@@ -1,11 +1,28 @@
 using DrasiWake.Host;
+using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 using DrasiWake.Core.Pipeline;
 using DrasiWake.LocalEnvironment;
+using DrasiWake.Persistence.Raft;
+using DrasiWake.Persistence.SonnetDB;
+using DrasiWake.Persistence.SonnetDB.Entities;
+using DrasiWake.Persistence.SonnetDB.Replication;
+using Grpc.Core;
+using Grpc.Net.Client;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using System.Text.Json.Nodes;
+using ProtoBuf.Grpc.Client;
 
 namespace DrasiWake.IntegrationTests;
 
@@ -76,6 +93,8 @@ public sealed class HostStartupTests
     [InlineData("DrasiWake:Cluster:NodeId", " ")]
     [InlineData("DrasiWake:Cluster:ListenAddress", "http://node-a.test:5101/")]
     [InlineData("DrasiWake:Cluster:Management:Address", "http://management.test:5102/")]
+    [InlineData("DrasiWake:Cluster:Management:Address", "https://node-a.test:5101/")]
+    [InlineData("DrasiWake:Cluster:Management:Address", "https://management.test:5102/admin")]
     [InlineData("DrasiWake:Cluster:RaftDataPath", "")]
     [InlineData("DrasiWake:Cluster:Certificate:Path", "")]
     [InlineData("DrasiWake:Cluster:Certificate:Password", "")]
@@ -153,6 +172,60 @@ public sealed class HostStartupTests
 
         Assert.Equal(RaftClusterMode.SingleNode, settings.Cluster.Mode);
         Assert.Null(settings.Cluster.ManagementBearerToken);
+        Assert.Null(settings.Cluster.ManagementAddress);
+    }
+
+    [Fact]
+    public void Single_node_host_does_not_register_management_services()
+    {
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Cluster:Mode"] = "SingleNode",
+            ["DrasiWake:Cluster:Management:BearerToken"] = null
+        }));
+
+        Assert.Null(host.Services.GetService<IRaftMembershipManager>());
+        Assert.Null(host.Services.GetService<IClusterCompatibilityProvider>());
+    }
+
+    [Fact]
+    public void Single_node_mode_rejects_https_listen_address_without_tls_configuration()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:Cluster:Mode"] = "SingleNode",
+                ["DrasiWake:Cluster:ListenAddress"] = "https://127.0.0.1:50051/"
+            })));
+
+        Assert.Contains("DrasiWake:Cluster:ListenAddress", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("TLS", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Business_configuration_fingerprint_is_stable_and_excludes_credentials()
+    {
+        var first = DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BearerToken"] = "first-test-token"
+        }));
+        var sameBusinessSettings = DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BearerToken"] = "second-test-token"
+        }));
+        var changedBusinessSettings = DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = "https://gateway.test/"
+        }));
+
+        var firstFingerprint = ClusterBusinessConfigurationFingerprint.Compute(first, ContractRegistry.Empty);
+
+        Assert.Equal(firstFingerprint,
+            ClusterBusinessConfigurationFingerprint.Compute(sameBusinessSettings, ContractRegistry.Empty));
+        Assert.NotEqual(firstFingerprint,
+            ClusterBusinessConfigurationFingerprint.Compute(changedBusinessSettings, ContractRegistry.Empty));
+        Assert.DoesNotContain("first-test-token", firstFingerprint, StringComparison.Ordinal);
+        Assert.DoesNotContain("second-test-token", firstFingerprint, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -382,6 +455,7 @@ public sealed class HostStartupTests
         try
         {
             await firstValidator.StartAsync(TestContext.Current.CancellationToken);
+            await AssertProjectionDidNotMutateBusinessStateAsync(firstHost, expectFingerprint: false);
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => secondValidator.StartAsync(TestContext.Current.CancellationToken));
             await firstValidator.StopAsync(CancellationToken.None);
@@ -392,6 +466,211 @@ public sealed class HostStartupTests
             firstHost.Dispose();
             secondHost.Dispose();
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Production_bridge_store_registration_uses_only_the_raft_adapter()
+    {
+        using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>()));
+
+        Assert.IsType<RaftBridgeStore>(host.Services.GetRequiredService<IBridgeStore>());
+        Assert.IsType<SonnetBridgeStore>(host.Services.GetRequiredService<IRaftBridgeProjection>());
+        Assert.IsType<DotNextRaftCommandExecutor>(host.Services.GetRequiredService<IRaftCommandExecutor>());
+        Assert.False(typeof(IBridgeStore).IsAssignableFrom(typeof(SonnetBridgeStore)));
+        Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is HostStartupValidator);
+        Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is RaftLeaderHostedService);
+        Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service =>
+            service.GetType() == typeof(BridgeHostedService) ||
+            service.GetType() == typeof(ReconciliationHostedService));
+    }
+
+    [Fact]
+    public async Task Single_node_host_starts_raft_and_worker_services_only_after_migration()
+    {
+        var (root, registryPath) = await CreateSampleRegistryWithTargetAsync("sample-gateway");
+        var databasePath = Path.Combine(root, "database");
+        var port = GetAvailablePort();
+        var configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = registryPath,
+            ["DrasiWake:Database:Path"] = databasePath,
+            ["DrasiWake:Cluster:ListenAddress"] = $"http://127.0.0.1:{port}/",
+            ["DrasiWake:Cluster:InitialMembers:0"] = $"http://127.0.0.1:{port}/",
+            ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(root, "raft")
+        });
+        using var host = DrasiWakeHostBuilder.CreateHost(configuration);
+
+        try
+        {
+            await host.StartAsync(TestContext.Current.CancellationToken);
+            await using var context = await host.Services.GetRequiredService<
+                    Microsoft.EntityFrameworkCore.IDbContextFactory<BridgeDbContext>>()
+                .CreateDbContextAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(context.Database.GetPendingMigrations());
+
+            var cluster = host.Services.GetRequiredService<DotNext.Net.Cluster.Consensus.Raft.IRaftCluster>();
+            await WaitForLeadershipAsync(cluster, TestContext.Current.CancellationToken);
+            var projection = host.Services.GetRequiredService<IRaftBridgeProjection>();
+            var timeout = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (await projection.GetLastAppliedIndexAsync(TestContext.Current.CancellationToken) == 0)
+            {
+                if (DateTimeOffset.UtcNow >= timeout)
+                    throw new TimeoutException("Leader startup preparation did not commit its configuration fingerprint.");
+                await Task.Delay(TimeSpan.FromMilliseconds(25), TestContext.Current.CancellationToken);
+            }
+            await AssertProjectionDidNotMutateBusinessStateAsync(host, expectFingerprint: true);
+            Assert.Equal(
+                ClusterBusinessConfigurationFingerprint.Compute(
+                    host.Services.GetRequiredService<DrasiWakeHostSettings>(),
+                    host.Services.GetRequiredService<ContractRegistryManager>().Active),
+                (await projection.ExportSnapshotAsync(TestContext.Current.CancellationToken)).ConfigurationFingerprint);
+        }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None);
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Multi_node_configuration_starts_an_http2_tls_raft_listener()
+    {
+        var (root, registryPath) = await CreateSampleRegistryWithTargetAsync("sample-gateway");
+        const string certificatePassword = "host-startup-test-password";
+        var certificatePath = Path.Combine(root, "raft-listener.pfx");
+        var certificateThumbprint = CreateServerCertificate(certificatePath, certificatePassword);
+        var port = GetAvailablePort();
+        var managementPort = GetAvailablePort();
+        var listenAddress = new Uri($"https://127.0.0.1:{port}/");
+        var managementAddress = new Uri($"https://127.0.0.1:{managementPort}/");
+        var config = CreateClusterConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Registry:Path"] = registryPath,
+            ["DrasiWake:Database:Path"] = Path.Combine(root, "database"),
+            ["DrasiWake:Cluster:ListenAddress"] = listenAddress.ToString(),
+            ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(root, "raft"),
+            ["DrasiWake:Cluster:InitialMembers:0"] = listenAddress.ToString(),
+            ["DrasiWake:Cluster:InitialMembers:1"] = $"https://127.0.0.1:{GetAvailablePort()}/",
+            ["DrasiWake:Cluster:InitialMembers:2"] = $"https://127.0.0.1:{GetAvailablePort()}/",
+            ["DrasiWake:Cluster:Certificate:Path"] = certificatePath,
+            ["DrasiWake:Cluster:Certificate:Password"] = certificatePassword,
+            ["DrasiWake:Cluster:Management:Address"] = managementAddress.ToString()
+        });
+        using var host = DrasiWakeHostBuilder.CreateHost(config);
+
+        try
+        {
+            await host.StartAsync(TestContext.Current.CancellationToken);
+            using var certificate = host.Services.GetRequiredService<RaftClusterSettings>().LoadServerCertificate();
+            Assert.True(certificate.HasPrivateKey);
+            Assert.Equal(certificateThumbprint, certificate.GetCertHashString(), ignoreCase: true);
+            var addresses = host.Services.GetRequiredService<IServer>()
+                .Features.Get<IServerAddressesFeature>()!.Addresses;
+            Assert.Contains(listenAddress.AbsoluteUri.TrimEnd('/'), addresses);
+            Assert.Contains(managementAddress.AbsoluteUri.TrimEnd('/'), addresses);
+            Assert.NotEqual(listenAddress.Port, managementAddress.Port);
+            using var managementSocket = new TcpClient();
+            await managementSocket.ConnectAsync(IPAddress.Loopback, managementPort, TestContext.Current.CancellationToken);
+            using var managementTls = new System.Net.Security.SslStream(
+                managementSocket.GetStream(),
+                leaveInnerStreamOpen: false,
+                (_, _, _, _) => true);
+            await managementTls.AuthenticateAsClientAsync(
+                new System.Net.Security.SslClientAuthenticationOptions
+                {
+                    TargetHost = "127.0.0.1",
+                    ApplicationProtocols = [SslApplicationProtocol.Http2]
+                },
+                TestContext.Current.CancellationToken);
+            Assert.Equal(SslApplicationProtocol.Http2, managementTls.NegotiatedApplicationProtocol);
+
+            using var httpHandler = new SocketsHttpHandler
+            {
+                SslOptions = { RemoteCertificateValidationCallback = (_, _, _, _) => true }
+            };
+            using var managementChannel = GrpcChannel.ForAddress(
+                managementAddress,
+                new GrpcChannelOptions { HttpHandler = httpHandler });
+            var managementRpc = managementChannel.CreateGrpcService<IClusterMembershipService>();
+            var managementFailure = await Assert.ThrowsAsync<RpcException>(() =>
+                managementRpc.GetCompatibility(new ClusterCompatibilityRequest()));
+            Assert.Equal(StatusCode.Unauthenticated, managementFailure.StatusCode);
+
+            using var raftChannel = GrpcChannel.ForAddress(
+                listenAddress,
+                new GrpcChannelOptions { HttpHandler = httpHandler });
+            var raftRpc = raftChannel.CreateGrpcService<IClusterMembershipService>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var raftFailure = await Assert.ThrowsAsync<RpcException>(() =>
+                raftRpc.GetCompatibility(
+                    new ClusterCompatibilityRequest(),
+                    new ProtoBuf.Grpc.CallContext(new CallOptions(cancellationToken: timeout.Token))));
+            Assert.NotEqual(StatusCode.Unauthenticated, raftFailure.StatusCode);
+
+        }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None);
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task AssertProjectionDidNotMutateBusinessStateAsync(IHost host, bool expectFingerprint)
+    {
+        await using var context = await host.Services.GetRequiredService<
+                Microsoft.EntityFrameworkCore.IDbContextFactory<BridgeDbContext>>()
+            .CreateDbContextAsync(TestContext.Current.CancellationToken);
+        var projectionState = await context.Set<RaftProjectionState>()
+            .SingleOrDefaultAsync(state => state.Id == RaftProjectionState.SingletonId);
+        Assert.Equal(expectFingerprint, projectionState?.ConfigurationFingerprint is not null);
+        Assert.Empty(await context.Subscriptions.ToListAsync());
+        Assert.Empty(await context.SnapshotCheckpoints.ToListAsync());
+        Assert.Empty(await context.KeyMappings.ToListAsync());
+        Assert.Empty(await context.WakeOutbox.ToListAsync());
+    }
+
+    private static int GetAvailablePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
+
+    private static string CreateServerCertificate(string path, string password)
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=127.0.0.1",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
+            false));
+        var subjectAlternativeNames = new SubjectAlternativeNameBuilder();
+        subjectAlternativeNames.AddIpAddress(IPAddress.Loopback);
+        request.CertificateExtensions.Add(subjectAlternativeNames.Build());
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllBytes(path, certificate.Export(X509ContentType.Pfx, password));
+        return certificate.GetCertHashString();
+    }
+
+    private static async Task WaitForLeadershipAsync(
+        DotNext.Net.Cluster.Consensus.Raft.IRaftCluster cluster,
+        CancellationToken cancellationToken)
+    {
+        var timeout = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (cluster.LeadershipToken.IsCancellationRequested)
+        {
+            if (DateTimeOffset.UtcNow >= timeout)
+                throw new TimeoutException("The single-node Raft cluster did not elect its leader.");
+            await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
         }
     }
 

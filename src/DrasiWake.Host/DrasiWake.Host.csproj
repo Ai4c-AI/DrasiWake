@@ -7,8 +7,6 @@
   <ItemGroup>
     <PackageReference Include="DotNext.AspNetCore.Cluster" />
     <PackageReference Include="Grpc.Net.Client" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" />
-    <PackageReference Include="Microsoft.Extensions.Http" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <PackageReference Include="protobuf-net.Grpc.AspNetCore" />
   </ItemGroup>
@@ -23,6 +21,7 @@
     <ProjectReference Include="..\DrasiWake.Adapters.DrasiServer\DrasiWake.Adapters.DrasiServer.csproj" />
     <ProjectReference Include="..\DrasiWake.Adapters.OpenClaw\DrasiWake.Adapters.OpenClaw.csproj" />
     <ProjectReference Include="..\DrasiWake.Persistence.SonnetDB\DrasiWake.Persistence.SonnetDB.csproj" />
+    <ProjectReference Include="..\DrasiWake.Persistence.Raft\DrasiWake.Persistence.Raft.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

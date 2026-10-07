@@ -1,7 +1,6 @@
 using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Pipeline;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace DrasiWake.Host;
 
@@ -12,22 +11,25 @@ public sealed class BridgeHostedService(
     SessionPartitioner partitioner,
     RecoveryCoordinator recovery,
     DrasiWakeHostSettings settings,
-    TimeProvider timeProvider,
-    ILogger<BridgeHostedService> logger) : IHostedService, IDisposable
+    TimeProvider timeProvider) : ILeaderEpochWorker, IDisposable
 {
     private CancellationTokenSource? stopping;
+    private Task? completion;
     private Task? partitionerTask;
     private Task? receiverTask;
     private Task? signalTask;
     private Task? dispatchTask;
 
+    public Task Completion => completion ?? Task.CompletedTask;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        stopping = new CancellationTokenSource();
+        stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         partitionerTask = partitioner.RunAsync(stopping.Token);
         receiverTask = ReceiveSignalsAsync(stopping.Token);
         signalTask = ProcessSignalsAsync(stopping.Token);
         dispatchTask = DispatchOutboxAsync(stopping.Token);
+        completion = SuperviseWorkersAsync(stopping.Token);
         return Task.CompletedTask;
     }
 
@@ -39,13 +41,9 @@ public sealed class BridgeHostedService(
         stopping.Cancel();
         inbox.TryComplete();
         await partitioner.StopAsync(settings.ShutdownTimeout, cancellationToken);
-        var tasks = new[] { receiverTask, signalTask, dispatchTask, partitionerTask }
-            .Where(task => task is not null)
-            .Cast<Task>()
-            .ToArray();
         try
         {
-            await Task.WhenAll(tasks).WaitAsync(settings.ShutdownTimeout, timeProvider, cancellationToken);
+            await Completion.WaitAsync(settings.ShutdownTimeout, timeProvider, cancellationToken);
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -56,42 +54,14 @@ public sealed class BridgeHostedService(
 
     private async Task ReceiveSignalsAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            await inbox.ReceiveAsync(changeSource.WatchAsync(cancellationToken), cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            logger.LogError("Drasi signal receiver stopped ({ErrorType}).", exception.GetType().Name);
-        }
+        await inbox.ReceiveAsync(changeSource.WatchAsync(cancellationToken), cancellationToken);
     }
 
     private async Task ProcessSignalsAsync(CancellationToken cancellationToken)
     {
-        try
+        await foreach (var signal in inbox.ReadAllAsync(cancellationToken))
         {
-            await foreach (var signal in inbox.ReadAllAsync(cancellationToken))
-            {
-                try
-                {
-                    await recovery.ReconcileAfterReconnectAsync(signal.Query, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    logger.LogWarning("Snapshot reconciliation failed for query {QueryId} ({ErrorType}).",
-                        BridgeTelemetry.StableId(signal.Query.QueryId), exception.GetType().Name);
-                }
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
+            await recovery.ReconcileAfterReconnectAsync(signal.Query, cancellationToken);
         }
     }
 
@@ -99,33 +69,28 @@ public sealed class BridgeHostedService(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            try
+            if (recovery.IsInitialized)
             {
-                if (recovery.IsInitialized)
-                {
-                    var items = await store.LoadDispatchableAsync(
-                        timeProvider.GetUtcNow(), settings.WorkerCount, cancellationToken);
-                    foreach (var item in items)
-                        await partitioner.EnqueueAsync(item, cancellationToken);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError("Outbox poll failed ({ErrorType}).", exception.GetType().Name);
+                var items = await store.LoadDispatchableAsync(
+                    timeProvider.GetUtcNow(), settings.WorkerCount, cancellationToken);
+                foreach (var item in items)
+                    await partitioner.EnqueueAsync(item, cancellationToken);
             }
 
-            try
-            {
-                await Task.Delay(settings.DispatchPollInterval, timeProvider, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
+            await Task.Delay(settings.DispatchPollInterval, timeProvider, cancellationToken);
         }
+    }
+
+    private async Task SuperviseWorkersAsync(CancellationToken cancellationToken)
+    {
+        var tasks = new[] { receiverTask!, signalTask!, dispatchTask!, partitionerTask! };
+        var firstCompleted = await Task.WhenAny(tasks).ConfigureAwait(false);
+        if (!cancellationToken.IsCancellationRequested)
+            stopping?.Cancel();
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await firstCompleted.ConfigureAwait(false);
+        if (!cancellationToken.IsCancellationRequested)
+            throw new InvalidOperationException("A bridge worker completed unexpectedly.");
     }
 }

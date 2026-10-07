@@ -20,6 +20,7 @@ public sealed class WakeOutbox
     public string? InvocationId { get; set; }
     public string? TraceId { get; set; }
     public string? LastErrorCode { get; set; }
+    public string? ClaimCommandId { get; set; }
     public DateTimeOffset? RetainUntilUtc { get; set; }
     public int Version { get; set; }
 }

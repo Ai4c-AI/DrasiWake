@@ -4,11 +4,14 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using DrasiWake.Adapters.DrasiServer;
 using DrasiWake.Adapters.OpenClaw;
+using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 using DrasiWake.Core.Pipeline;
+using DrasiWake.Persistence.Raft;
 using DrasiWake.Persistence.SonnetDB;
 using DrasiWake.Persistence.SonnetDB.Entities;
+using DrasiWake.Persistence.SonnetDB.Replication;
 using Microsoft.EntityFrameworkCore;
 using SnapshotCheckpointEntity = DrasiWake.Persistence.SonnetDB.Entities.SnapshotCheckpoint;
 
@@ -67,7 +70,7 @@ internal sealed class BridgeTestFixture : IAsyncDisposable
     public LocalDrasiHandler DrasiHandler { get; }
     public LocalGatewayHandler GatewayHandler { get; }
     public DrasiChangeSource ChangeSource { get; }
-    public SonnetBridgeStore Store { get; }
+    public IBridgeStore Store { get; }
     public SnapshotReconciler Reconciler { get; }
     public OpenClawMetaInvocationClient GatewayClient { get; }
     public OutboxDispatcher Dispatcher { get; }
@@ -122,7 +125,35 @@ internal sealed class BridgeTestFixture : IAsyncDisposable
         }
     }
 
-    public SonnetBridgeStore CreateStore() => new(ContextFactory);
+    public IBridgeStore CreateStore()
+    {
+        var projection = new SonnetBridgeStore(ContextFactory);
+        return new RaftBridgeStore(new ProjectionBackedExecutor(projection), projection);
+    }
+
+    private sealed class ProjectionBackedExecutor(IRaftBridgeProjection projection) : IRaftCommandExecutor
+    {
+        private readonly SemaphoreSlim _gate = new(1, 1);
+
+        public bool IsLeader => true;
+        public bool HasQuorum => true;
+
+        public async ValueTask ReplicateAsync(
+            ReplicatedBridgeCommand command,
+            CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                var nextIndex = await projection.GetLastAppliedIndexAsync(cancellationToken) + 1;
+                await projection.ApplyReplicatedCommandAsync(command, nextIndex, cancellationToken);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+    }
 
     public async Task RestartDatabaseAsync(CancellationToken cancellationToken = default)
     {

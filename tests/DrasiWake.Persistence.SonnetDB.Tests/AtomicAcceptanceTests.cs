@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using DrasiWake.Persistence.SonnetDB.Entities;
+using DrasiWake.Persistence.SonnetDB.Replication;
 using CoreSnapshotCheckpoint = DrasiWake.Core.Domain.SnapshotCheckpoint;
 using SnapshotCheckpointEntity = DrasiWake.Persistence.SonnetDB.Entities.SnapshotCheckpoint;
 using WakeOutboxEntity = DrasiWake.Persistence.SonnetDB.Entities.WakeOutbox;
@@ -39,7 +40,7 @@ public sealed class AtomicAcceptanceTests
                 await setupContext.SaveChangesAsync(TestContext.Current.CancellationToken);
             }
 
-            var failingOptions = CreateOptions(connectionString, new FailOnSecondSaveChangesInterceptor());
+            var failingOptions = CreateOptions(connectionString, new FailOnFirstSaveChangesInterceptor());
             var store = new SonnetBridgeStore(new TestContextFactory(failingOptions));
             var newCheckpoint = new CoreSnapshotCheckpoint(
                 pendingWake.BindingId,
@@ -49,10 +50,10 @@ public sealed class AtomicAcceptanceTests
             var acceptance = new WakeAcceptance("invocation-failed-transaction", newCheckpoint.AcceptedAtUtc);
 
             await Assert.ThrowsAsync<InjectedStoreFailure>(async () =>
-                await store.MarkAcceptedWithCheckpointAsync(
-                    pendingWake.Id,
-                    acceptance,
-                    newCheckpoint,
+                await ApplyAsync(
+                    store,
+                    BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                    new MarkAcceptedWithCheckpointPayload(pendingWake.Id, acceptance, newCheckpoint),
                     TestContext.Current.CancellationToken));
 
             await using var verificationContext = new BridgeDbContext(plainOptions);
@@ -88,16 +89,22 @@ public sealed class AtomicAcceptanceTests
             }
 
             var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(ToDomain(pendingWake)),
+                TestContext.Current.CancellationToken);
             var acceptedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            await store.MarkAcceptedWithCheckpointAsync(
-                pendingWake.Id,
-                new WakeAcceptance("invocation-reopen", acceptedAt),
-                new CoreSnapshotCheckpoint(
-                    pendingWake.BindingId,
-                    pendingWake.SessionId,
-                    pendingWake.SnapshotFingerprint,
-                    acceptedAt),
+            var acceptance = new WakeAcceptance("invocation-reopen", acceptedAt);
+            var checkpoint = new CoreSnapshotCheckpoint(
+                pendingWake.BindingId,
+                pendingWake.SessionId,
+                pendingWake.SnapshotFingerprint,
+                acceptedAt);
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                new MarkAcceptedWithCheckpointPayload(pendingWake.Id, acceptance, checkpoint),
                 TestContext.Current.CancellationToken);
 
             await using var reopenedContext = new BridgeDbContext(options);
@@ -111,7 +118,7 @@ public sealed class AtomicAcceptanceTests
                     item => item.BindingId == pendingWake.BindingId && item.SessionId == pendingWake.SessionId,
                     TestContext.Current.CancellationToken);
 
-            Assert.Equal(2, migrations.Count());
+            Assert.Equal(4, migrations.Count());
             Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
             Assert.Equal(pendingWake.OpenClawTarget, persistedWake.OpenClawTarget);
             Assert.Equal(pendingWake.SnapshotFingerprint, persistedCheckpoint.Fingerprint);
@@ -166,20 +173,23 @@ public sealed class AtomicAcceptanceTests
             }
 
             var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.EnsureOpenClawTargetsAsync(
-                new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    [bindingId] = "sample-gateway"
-                },
-                new HashSet<string>(StringComparer.Ordinal) { "sample-gateway" },
-                new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
-                {
-                    [bindingId] = TimeSpan.FromDays(1)
-                },
-                new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
-                {
-                    ["sample-gateway"] = TimeSpan.FromDays(30)
-                },
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.EnsureOpenClawTargets,
+                new EnsureOpenClawTargetsPayload(
+                    new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        [bindingId] = "sample-gateway"
+                    },
+                    new HashSet<string>(StringComparer.Ordinal) { "sample-gateway" },
+                    new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
+                    {
+                        [bindingId] = TimeSpan.FromDays(1)
+                    },
+                    new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
+                    {
+                        ["sample-gateway"] = TimeSpan.FromDays(30)
+                    }),
                 TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
@@ -208,7 +218,11 @@ public sealed class AtomicAcceptanceTests
             }
 
             var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(ToDomain(pendingWake)),
+                TestContext.Current.CancellationToken);
             var acceptance = new WakeAcceptance("invocation-42", DateTimeOffset.UtcNow);
             var checkpoint = new CoreSnapshotCheckpoint(
                 pendingWake.BindingId,
@@ -216,10 +230,10 @@ public sealed class AtomicAcceptanceTests
                 pendingWake.SnapshotFingerprint,
                 acceptance.AcceptedAtUtc);
 
-            await store.MarkAcceptedWithCheckpointAsync(
-                pendingWake.Id,
-                acceptance,
-                checkpoint,
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                new MarkAcceptedWithCheckpointPayload(pendingWake.Id, acceptance, checkpoint),
                 TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
@@ -254,21 +268,29 @@ public sealed class AtomicAcceptanceTests
             }
 
             var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(ToDomain(pendingWake)),
+                TestContext.Current.CancellationToken);
             var acceptedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             var checkpoint = new CoreSnapshotCheckpoint(
                 pendingWake.BindingId,
                 pendingWake.SessionId,
                 pendingWake.SnapshotFingerprint,
                 acceptedAt);
-            await store.MarkAcceptedWithCheckpointAsync(
-                pendingWake.Id,
-                new WakeAcceptance("invocation-execution", acceptedAt),
-                checkpoint,
+            var acceptance = new WakeAcceptance("invocation-execution", acceptedAt);
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                new MarkAcceptedWithCheckpointPayload(pendingWake.Id, acceptance, checkpoint),
                 TestContext.Current.CancellationToken);
 
-            await store.UpdateExecutionStatusAsync(
-                new WakeExecutionStatus("invocation-execution", "Completed", acceptedAt.AddSeconds(5)),
+            await ApplyAsync(
+                store,
+                BridgeCommandKind.UpdateExecutionStatus,
+                new UpdateExecutionStatusPayload(
+                    new WakeExecutionStatus("invocation-execution", "Completed", acceptedAt.AddSeconds(5))),
                 TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
@@ -304,14 +326,9 @@ public sealed class AtomicAcceptanceTests
             var entity = CreatePendingWake();
             var rejectedWake = ToDomain(entity) with { Status = WakeOutboxStatus.DeadLetter };
             var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.RecordRejectedWakeAsync(
-                rejectedWake,
-                "payload.schema_invalid",
-                TestContext.Current.CancellationToken);
-            await store.RecordRejectedWakeAsync(
-                rejectedWake,
-                "payload.schema_invalid",
-                TestContext.Current.CancellationToken);
+            var rejectedPayload = new RecordRejectedWakePayload(rejectedWake, "payload.schema_invalid");
+            await ApplyAsync(store, BridgeCommandKind.RecordRejectedWake, rejectedPayload, TestContext.Current.CancellationToken);
+            await ApplyAsync(store, BridgeCommandKind.RecordRejectedWake, rejectedPayload, TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
             var persisted = await verificationContext.WakeOutbox.AsNoTracking()
@@ -346,11 +363,29 @@ public sealed class AtomicAcceptanceTests
                 await context.SaveChangesAsync(TestContext.Current.CancellationToken);
             }
 
-            var store = new SonnetBridgeStore(new TestContextFactory(options));
             var nowUtc = DateTimeOffset.UtcNow;
-            var firstClaim = await store.LoadDispatchableAsync(nowUtc, 1, TestContext.Current.CancellationToken);
-            var secondClaim = await store.LoadDispatchableAsync(nowUtc, 1, TestContext.Current.CancellationToken);
-            var emptyClaim = await store.LoadDispatchableAsync(nowUtc, 1, TestContext.Current.CancellationToken);
+            var projection = new SonnetBridgeStore(new TestContextFactory(options));
+            var firstCandidate = Assert.Single(await projection.LoadDispatchableCandidatesAsync(
+                nowUtc, 1, TestContext.Current.CancellationToken));
+            var firstClaimCommand = ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.ClaimDispatchable,
+                new ClaimDispatchablePayload([firstCandidate.Id], nowUtc, Guid.NewGuid()));
+            await projection.ApplyReplicatedCommandAsync(
+                firstClaimCommand, 1, TestContext.Current.CancellationToken);
+            var firstClaim = await projection.ReadClaimedDispatchableAsync(
+                [firstCandidate.Id], firstClaimCommand.CommandId, TestContext.Current.CancellationToken);
+
+            var secondCandidate = Assert.Single(await projection.LoadDispatchableCandidatesAsync(
+                nowUtc, 1, TestContext.Current.CancellationToken));
+            var secondClaimCommand = ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.ClaimDispatchable,
+                new ClaimDispatchablePayload([secondCandidate.Id], nowUtc, Guid.NewGuid()));
+            await projection.ApplyReplicatedCommandAsync(
+                secondClaimCommand, 2, TestContext.Current.CancellationToken);
+            var secondClaim = await projection.ReadClaimedDispatchableAsync(
+                [secondCandidate.Id], secondClaimCommand.CommandId, TestContext.Current.CancellationToken);
+            var emptyClaim = await projection.LoadDispatchableCandidatesAsync(
+                nowUtc, 1, TestContext.Current.CancellationToken);
 
             Assert.Equal(first.Id, Assert.Single(firstClaim).Id);
             Assert.Equal(second.Id, Assert.Single(secondClaim).Id);
@@ -381,17 +416,26 @@ public sealed class AtomicAcceptanceTests
                 await context.SaveChangesAsync(TestContext.Current.CancellationToken);
             }
 
-            var store = new SonnetBridgeStore(new TestContextFactory(options));
+            var projection = new SonnetBridgeStore(new TestContextFactory(options));
             var replacement = ToDomain(superseded) with
             {
                 SnapshotFingerprint = "replacement-fingerprint",
                 Status = WakeOutboxStatus.Pending,
                 OpenClawTarget = "sample-gateway"
             };
-            var persisted = await store.CreateOrUpdatePendingWakeAsync(
-                replacement,
+            await ApplyAsync(
+                projection,
+                BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(replacement),
+                TestContext.Current.CancellationToken);
+            var persisted = await projection.FindPendingWakeResultAsync(
+                replacement.Id,
+                replacement.BindingId,
+                replacement.SessionId,
+                replacement.SnapshotFingerprint,
                 TestContext.Current.CancellationToken);
 
+            Assert.NotNull(persisted);
             Assert.Equal(WakeOutboxStatus.Superseded, persisted.Status);
             Assert.Equal(superseded.SnapshotFingerprint, persisted.SnapshotFingerprint);
         }
@@ -415,26 +459,37 @@ public sealed class AtomicAcceptanceTests
                 await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
             }
 
-            var store = new SonnetBridgeStore(new TestContextFactory(options));
-            await store.CreateOrUpdatePendingWakeAsync(ToDomain(pendingWake), TestContext.Current.CancellationToken);
+            var projection = new SonnetBridgeStore(new TestContextFactory(options));
+            await ApplyAsync(
+                projection,
+                BridgeCommandKind.CreateOrUpdatePendingWake,
+                new CreateOrUpdatePendingWakePayload(ToDomain(pendingWake)),
+                TestContext.Current.CancellationToken);
             var checkpoint = new CoreSnapshotCheckpoint(
                 pendingWake.BindingId,
                 pendingWake.SessionId,
                 pendingWake.SnapshotFingerprint,
                 DateTimeOffset.UtcNow);
             var acceptance = new WakeAcceptance("invocation-repeat", checkpoint.AcceptedAtUtc);
-            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, acceptance, checkpoint, TestContext.Current.CancellationToken);
+            var acceptedCommand = new MarkAcceptedWithCheckpointPayload(pendingWake.Id, acceptance, checkpoint);
+            await ApplyAsync(
+                projection,
+                BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                acceptedCommand,
+                TestContext.Current.CancellationToken);
 
-            await using (var completedContext = new BridgeDbContext(options))
-            {
-                var persisted = await completedContext.WakeOutbox.SingleAsync(
-                    item => item.Id == pendingWake.Id,
-                    TestContext.Current.CancellationToken);
-                persisted.Status = WakeOutboxStatus.Completed;
-                await completedContext.SaveChangesAsync(TestContext.Current.CancellationToken);
-            }
+            await ApplyAsync(
+                projection,
+                BridgeCommandKind.UpdateExecutionStatus,
+                new UpdateExecutionStatusPayload(
+                    new WakeExecutionStatus("invocation-repeat", "Completed", checkpoint.AcceptedAtUtc)),
+                TestContext.Current.CancellationToken);
 
-            await store.MarkAcceptedWithCheckpointAsync(pendingWake.Id, acceptance, checkpoint, TestContext.Current.CancellationToken);
+            await ApplyAsync(
+                projection,
+                BridgeCommandKind.MarkAcceptedWithCheckpoint,
+                acceptedCommand,
+                TestContext.Current.CancellationToken);
 
             await using var verificationContext = new BridgeDbContext(options);
             var status = await verificationContext.WakeOutbox.AsNoTracking()
@@ -483,6 +538,17 @@ public sealed class AtomicAcceptanceTests
         item.TraceId,
         item.OpenClawTarget!);
 
+    private static async Task ApplyAsync<TPayload>(
+        SonnetBridgeStore projection,
+        BridgeCommandKind kind,
+        TPayload payload,
+        CancellationToken cancellationToken)
+    {
+        var command = ReplicatedBridgeCommand.Create(kind, payload);
+        var nextIndex = await projection.GetLastAppliedIndexAsync(cancellationToken) + 1;
+        await projection.ApplyReplicatedCommandAsync(command, nextIndex, cancellationToken);
+    }
+
     private static DbContextOptions<BridgeDbContext> CreateOptions(
         string connectionString,
         IInterceptor? interceptor = null)
@@ -506,7 +572,7 @@ public sealed class AtomicAcceptanceTests
             Task.FromResult(CreateDbContext());
     }
 
-    private sealed class FailOnSecondSaveChangesInterceptor : SaveChangesInterceptor
+    private sealed class FailOnFirstSaveChangesInterceptor : SaveChangesInterceptor
     {
         private int _saveCount;
 
@@ -515,7 +581,7 @@ public sealed class AtomicAcceptanceTests
             InterceptionResult<int> result,
             CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref _saveCount) == 2)
+            if (Interlocked.Increment(ref _saveCount) == 1)
             {
                 throw new InjectedStoreFailure();
             }
