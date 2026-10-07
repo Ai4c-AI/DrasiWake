@@ -15,14 +15,17 @@ public sealed record DrasiWakeHostSettings(
     int WorkerCount,
     TimeSpan ReconciliationInterval,
     TimeSpan ShutdownTimeout,
-    TimeSpan DispatchPollInterval)
+    TimeSpan DispatchPollInterval,
+    RaftClusterSettings Cluster)
 {
     public static DrasiWakeHostSettings FromConfiguration(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var drasiUri = ReadUri(configuration, "DrasiWake:Drasi:ServerUri");
         var databasePath = ReadRequired(configuration, "DrasiWake:Database:Path");
+        var fullDatabasePath = Path.GetFullPath(databasePath);
         var registryPath = ReadRequired(configuration, "DrasiWake:Registry:Path");
+        var clusterSettings = RaftClusterSettings.FromConfiguration(configuration, fullDatabasePath);
         var signalCapacity = ReadInt(configuration, "DrasiWake:ChannelCapacity", 256);
         var workerCount = ReadInt(configuration, "DrasiWake:WorkerCount", 4);
         var openClawTargets = ReadOpenClawTargets(configuration);
@@ -43,17 +46,19 @@ public sealed record DrasiWakeHostSettings(
             drasiOptions,
             openClawOptions,
             openClawTargets,
-            Path.GetFullPath(databasePath),
+            fullDatabasePath,
             Path.GetFullPath(registryPath),
             signalCapacity,
             workerCount,
             ReadTimeSpan(configuration, "DrasiWake:ReconciliationInterval", TimeSpan.FromMinutes(1)),
             ReadTimeSpan(configuration, "DrasiWake:ShutdownTimeout", TimeSpan.FromSeconds(30)),
-            ReadTimeSpan(configuration, "DrasiWake:DispatchPollInterval", TimeSpan.FromMilliseconds(250)));
+            ReadTimeSpan(configuration, "DrasiWake:DispatchPollInterval", TimeSpan.FromMilliseconds(250)),
+            clusterSettings);
     }
 
     public void Validate()
     {
+        Cluster.Validate();
         ArgumentNullException.ThrowIfNull(Drasi.ServerUri);
         if (!Drasi.ServerUri.IsAbsoluteUri || Drasi.SignalCapacity < 1 ||
             Drasi.InitialReconnectDelay <= TimeSpan.Zero || Drasi.MaxReconnectDelay < Drasi.InitialReconnectDelay)

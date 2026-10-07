@@ -70,7 +70,7 @@
 - `Mode` 取 `SingleNode` 或 `Cluster`。`SingleNode` 派生稳定的本地节点身份、loopback endpoint 和一个本地成员；`Cluster` 必须提供稳定 NodeId、HTTPS 地址、独立 Raft 路径、证书、管理 HTTPS 地址/令牌、正数快照频率及有效初始成员 URI。
 - `DrasiWakeHostSettings` 保留既有设置，并公开已经校验的 `Cluster` 设置。
 
-- [ ] **步骤 1：先写失败的配置测试。** 在 `HostStartupTests` 增加默认单节点、有效三成员配置、NodeId 为空、初始成员 URI 重复、集群地址非 HTTPS、Raft 与数据库路径相同、管理令牌缺失、成员 URI 无效、快照频率非正数等测试。重复 NodeId 应在成员预检阶段测试，因为届时才有已持久化的完整成员列表。
+- [x] **步骤 1：先写失败的配置测试。** 在 `HostStartupTests` 增加默认单节点、有效三成员配置、NodeId 为空、初始成员 URI 重复、集群地址非 HTTPS、Raft 与数据库路径相同、管理令牌缺失、成员 URI 无效、快照频率非正数等测试。重复 NodeId 应在成员预检阶段测试，因为届时才有已持久化的完整成员列表。
 
   管理令牌缺失只在 `Cluster` 模式下报错。`SingleNode` 模式保持已签入配置不含密钥，也不暴露运行时成员管理接口。
 
@@ -93,19 +93,19 @@
   }
   ```
 
-- [ ] **步骤 2：运行指定测试类，确认新增测试先失败。**
+- [x] **步骤 2：运行指定测试类，确认新增测试先失败。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.HostStartupTests`
 
   预期：新增测试因尚无集群配置解析/校验而失败；确认测试筛选器确实执行了测试，不能接受零测试结果。
 
-- [ ] **步骤 3：固定并引用所需 NuGet 包。** 按 SlikCache 的版本在中央清单增加 `DotNext.AspNetCore.Cluster` 6.9.0、`Grpc.Net.Client` 2.84.0、`protobuf-net.Grpc.AspNetCore` 1.3.14。Host 增加 ASP.NET Core framework reference；各项目只引用实际使用的包和项目。
+- [x] **步骤 3：固定并引用所需 NuGet 包。** 按 SlikCache 的版本在中央清单增加 `DotNext.AspNetCore.Cluster` 6.9.0、`Grpc.Net.Client` 2.84.0、`protobuf-net.Grpc.AspNetCore` 1.3.14。Host 增加 ASP.NET Core framework reference；各项目只引用实际使用的包和项目。
 
-- [ ] **步骤 4：实现设置解析和校验。** 解析 `DrasiWake:Cluster`；仅当沿用旧单节点配置时默认生成 loopback 单节点设置。`Cluster` 模式下缺失/无效值必须显式报错并指出配置键。规范化成员 URI、拒绝重复地址、要求本地地址出现在初始成员中，并拒绝 Raft 与 SonnetDB 使用相同目录。
+- [x] **步骤 4：实现设置解析和校验。** 解析 `DrasiWake:Cluster`；仅当沿用旧单节点配置时默认生成 loopback 单节点设置。`Cluster` 模式下缺失/无效值必须显式报错并指出配置键。规范化成员 URI、拒绝重复地址、要求本地地址出现在初始成员中，并拒绝 Raft 与 SonnetDB 使用相同目录。
 
-- [ ] **步骤 5：补充不含密钥的示例配置。** 在 `appsettings.json` 添加单节点 `Cluster` 设置；不得写入真实证书密码或管理令牌。多节点配置的密钥只由环境变量/secret provider 注入，且单节点模式关闭成员管理 gRPC。
+- [x] **步骤 5：补充不含密钥的示例配置。** 在 `appsettings.json` 添加单节点 `Cluster` 设置；不得写入真实证书密码或管理令牌。多节点配置的密钥只由环境变量/secret provider 注入，且单节点模式关闭成员管理 gRPC（当前尚无成员管理 gRPC 服务）。
 
-- [ ] **步骤 6：运行 Host 启动测试并提交。**
+- [x] **步骤 6：运行 Host 启动测试并提交。**
 
   运行：`dotnet test --project tests\DrasiWake.IntegrationTests\DrasiWake.IntegrationTests.csproj -c Release --filter-class DrasiWake.IntegrationTests.HostStartupTests`
 

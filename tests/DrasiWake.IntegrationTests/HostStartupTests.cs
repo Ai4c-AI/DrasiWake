@@ -12,6 +12,150 @@ namespace DrasiWake.IntegrationTests;
 public sealed class HostStartupTests
 {
     [Fact]
+    public void Legacy_configuration_defaults_to_a_stable_single_node_cluster()
+    {
+        var settings = DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(
+            new Dictionary<string, string?>()));
+
+        Assert.Equal(RaftClusterMode.SingleNode, settings.Cluster.Mode);
+        Assert.Equal("local", settings.Cluster.NodeId);
+        Assert.Equal(new Uri("http://127.0.0.1:50051/"), settings.Cluster.ListenAddress);
+        Assert.Equal(Path.GetFullPath(settings.DatabasePath + "-raft"), settings.Cluster.RaftDataPath);
+        Assert.Equal([settings.Cluster.ListenAddress], settings.Cluster.InitialMembers);
+        Assert.Null(settings.Cluster.ManagementAddress);
+        Assert.Null(settings.Cluster.ManagementBearerToken);
+    }
+
+    [Fact]
+    public void Valid_cluster_configuration_binds_three_unique_https_members()
+    {
+        var settings = DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration());
+
+        Assert.Equal(RaftClusterMode.Cluster, settings.Cluster.Mode);
+        Assert.Equal("node-a", settings.Cluster.NodeId);
+        Assert.Equal(new Uri("https://node-a.test:5101/"), settings.Cluster.ListenAddress);
+        Assert.Equal(
+            [
+                new Uri("https://node-a.test:5101/"),
+                new Uri("https://node-b.test:5101/"),
+                new Uri("https://node-c.test:5101/")
+            ],
+            settings.Cluster.InitialMembers);
+        Assert.Equal(1000, settings.Cluster.SnapshotFrequency);
+        Assert.Equal("test-only-token", settings.Cluster.ManagementBearerToken);
+    }
+
+    [Fact]
+    public void Cluster_section_requires_an_explicit_mode()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+            {
+                ["DrasiWake:Cluster:NodeId"] = "node-a"
+            })));
+
+        Assert.Contains("DrasiWake:Cluster:Mode", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cluster_mode_requires_snapshot_frequency()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration(
+                new Dictionary<string, string?>
+                {
+                    ["DrasiWake:Cluster:SnapshotFrequency"] = null
+                })));
+
+        Assert.Contains("DrasiWake:Cluster:SnapshotFrequency", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("DrasiWake:Cluster:Mode", "1")]
+    [InlineData("DrasiWake:Cluster:Mode", " ")]
+    [InlineData("DrasiWake:Cluster:NodeId", " ")]
+    [InlineData("DrasiWake:Cluster:ListenAddress", "http://node-a.test:5101/")]
+    [InlineData("DrasiWake:Cluster:Management:Address", "http://management.test:5102/")]
+    [InlineData("DrasiWake:Cluster:RaftDataPath", "")]
+    [InlineData("DrasiWake:Cluster:Certificate:Path", "")]
+    [InlineData("DrasiWake:Cluster:Certificate:Password", "")]
+    [InlineData("DrasiWake:Cluster:Management:BearerToken", "")]
+    [InlineData("DrasiWake:Cluster:InitialMembers:1", "https://node-a.test:5101/")]
+    [InlineData("DrasiWake:Cluster:InitialMembers:2", "not a uri")]
+    [InlineData("DrasiWake:Cluster:SnapshotFrequency", "0")]
+    [InlineData("DrasiWake:Cluster:SnapshotFrequency", "-1")]
+    public void Invalid_cluster_configuration_is_rejected_with_its_key(string key, string value)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            [key] = value
+        };
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration(values)));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-only-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cluster_mode_requires_management_token_without_echoing_secret_values()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration(
+                new Dictionary<string, string?>
+                {
+                    ["DrasiWake:Cluster:Management:BearerToken"] = null
+                })));
+
+        Assert.Contains("DrasiWake:Cluster:Management:BearerToken", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-only-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cluster_mode_rejects_raft_path_equal_to_database_path()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"DrasiWake-raft-{Guid.NewGuid():N}");
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration(
+                new Dictionary<string, string?>
+                {
+                    ["DrasiWake:Database:Path"] = databasePath,
+                    ["DrasiWake:Cluster:RaftDataPath"] = databasePath
+                })));
+
+        Assert.Contains("DrasiWake:Cluster:RaftDataPath", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-only-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cluster_mode_requires_local_listen_address_in_initial_members()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            DrasiWakeHostSettings.FromConfiguration(CreateClusterConfiguration(
+                new Dictionary<string, string?>
+                {
+                    ["DrasiWake:Cluster:InitialMembers:0"] = "https://node-b.test:5101/",
+                    ["DrasiWake:Cluster:InitialMembers:1"] = "https://node-c.test:5101/",
+                    ["DrasiWake:Cluster:InitialMembers:2"] = "https://node-d.test:5101/"
+                })));
+
+        Assert.Contains("DrasiWake:Cluster:InitialMembers", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Explicit_single_node_mode_does_not_require_management_secrets()
+    {
+        var settings = DrasiWakeHostSettings.FromConfiguration(CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["DrasiWake:Cluster:Mode"] = "SingleNode",
+            ["DrasiWake:Cluster:Management:BearerToken"] = null
+        }));
+
+        Assert.Equal(RaftClusterMode.SingleNode, settings.Cluster.Mode);
+        Assert.Null(settings.Cluster.ManagementBearerToken);
+    }
+
+    [Fact]
     public async Task Invalid_registry_fails_host_startup()
     {
         using var host = DrasiWakeHostBuilder.CreateHost(CreateConfiguration(new Dictionary<string, string?>
@@ -264,6 +408,33 @@ public sealed class HostStartupTests
         foreach (var entry in overrides)
             values[entry.Key] = entry.Value;
         return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+    }
+
+    private static IConfiguration CreateClusterConfiguration(
+        IReadOnlyDictionary<string, string?>? overrides = null)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["DrasiWake:Cluster:Mode"] = "Cluster",
+            ["DrasiWake:Cluster:NodeId"] = "node-a",
+            ["DrasiWake:Cluster:ListenAddress"] = "https://node-a.test:5101/",
+            ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(Path.GetTempPath(), $"DrasiWake-raft-{Guid.NewGuid():N}"),
+            ["DrasiWake:Cluster:InitialMembers:0"] = "https://node-a.test:5101/",
+            ["DrasiWake:Cluster:InitialMembers:1"] = "https://node-b.test:5101/",
+            ["DrasiWake:Cluster:InitialMembers:2"] = "https://node-c.test:5101/",
+            ["DrasiWake:Cluster:Certificate:Path"] = "certificates/node.pfx",
+            ["DrasiWake:Cluster:Certificate:Password"] = "test-only-password",
+            ["DrasiWake:Cluster:Management:Address"] = "https://node-a.test:5102/",
+            ["DrasiWake:Cluster:Management:BearerToken"] = "test-only-token",
+            ["DrasiWake:Cluster:SnapshotFrequency"] = "1000"
+        };
+        if (overrides is not null)
+        {
+            foreach (var entry in overrides)
+                values[entry.Key] = entry.Value;
+        }
+
+        return CreateConfiguration(values);
     }
 
     private static async Task<(string Root, string RegistryPath)> CreateSampleRegistryWithTargetAsync(string target)
