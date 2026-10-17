@@ -37,6 +37,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.Persistence.Raft"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.Persistence.Raft.Tests", "tests\DrasiWake.Persistence.Raft.Tests\DrasiWake.Persistence.Raft.Tests.csproj", "{FFB74130-D473-4E62-A3E5-77AA24E612FA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DrasiWake.Cli", "src\DrasiWake.Cli\DrasiWake.Cli.csproj", "{07916302-CD59-4CBF-A728-A0E87EA0CEAA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -227,6 +229,18 @@ Global
 		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x64.Build.0 = Release|Any CPU
 		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x86.ActiveCfg = Release|Any CPU
 		{FFB74130-D473-4E62-A3E5-77AA24E612FA}.Release|x86.Build.0 = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|x64.Build.0 = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Debug|x86.Build.0 = Debug|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|x64.ActiveCfg = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|x64.Build.0 = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|x86.ActiveCfg = Release|Any CPU
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -247,5 +261,6 @@ Global
 		{E24F060A-B918-492A-93E3-7CAC96C111C9} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{46960713-BF15-419B-8A5D-7A0EE0E30EA6} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{FFB74130-D473-4E62-A3E5-77AA24E612FA} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{07916302-CD59-4CBF-A728-A0E87EA0CEAA} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

@@ -119,7 +119,8 @@ public sealed class SnapshotReconciler(
                     }
                     catch (WakePayloadRejectedException exception)
                     {
-                        await store.SupersedePendingWakesAsync(binding.Id, sessionId, fingerprint, cancellationToken);
+                        await store.SupersedePendingWakesAsync(
+                            binding.Id, sessionId, fingerprint, null, cancellationToken);
                         await store.RecordRejectedWakeAsync(
                             CreateRejectedWake(binding, sessionId, fingerprint, exception.ErrorCode),
                             exception.ErrorCode,
@@ -127,7 +128,12 @@ public sealed class SnapshotReconciler(
                         continue;
                     }
 
-                    await store.SupersedePendingWakesAsync(binding.Id, sessionId, fingerprint, cancellationToken);
+                    var supersededBy = recoveryState.DispatchableItems.FirstOrDefault(item =>
+                        item.BindingId == binding.Id && item.SessionId == sessionId &&
+                        item.SnapshotFingerprint == fingerprint &&
+                        item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled);
+                    await store.SupersedePendingWakesAsync(
+                        binding.Id, sessionId, fingerprint, supersededBy?.Id, cancellationToken);
                     var checkpoint = recoveryState.Checkpoints.FirstOrDefault(item =>
                         item.BindingId == binding.Id && item.SessionId == sessionId);
                     if (checkpoint?.Fingerprint == fingerprint)
@@ -136,10 +142,7 @@ public sealed class SnapshotReconciler(
                         continue;
                     }
 
-                    if (recoveryState.DispatchableItems.Any(item =>
-                            item.BindingId == binding.Id && item.SessionId == sessionId &&
-                            item.SnapshotFingerprint == fingerprint &&
-                            item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled))
+                    if (supersededBy is not null)
                     {
                         BridgeTelemetry.RecordDuplicateFingerprint(binding.Id);
                         continue;

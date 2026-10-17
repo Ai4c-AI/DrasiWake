@@ -149,16 +149,19 @@ namespace DrasiWake.Persistence.SonnetDB.Migrations
                         .HasMaxLength(512)
                         .HasColumnType("STRING");
 
+                    b.Property<string>("ClaimCommandId")
+                        .HasMaxLength(64)
+                        .HasColumnType("STRING");
+
                     b.Property<string>("ContractVersion")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("STRING");
 
-                    b.Property<string>("ClaimCommandId")
-                        .HasMaxLength(64)
-                        .HasColumnType("STRING");
-
                     b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("DATETIME");
+
+                    b.Property<DateTimeOffset?>("FirstDispatchedAtUtc")
                         .HasColumnType("DATETIME");
 
                     b.Property<string>("IdempotencyKey")
@@ -178,12 +181,18 @@ namespace DrasiWake.Persistence.SonnetDB.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("STRING");
 
+                    b.Property<DateTimeOffset?>("LastReplayedAtUtc")
+                        .HasColumnType("DATETIME");
+
                     b.Property<DateTimeOffset>("NextAttemptAtUtc")
                         .HasColumnType("DATETIME");
 
                     b.Property<string>("OpenClawTarget")
                         .HasMaxLength(512)
                         .HasColumnType("STRING");
+
+                    b.Property<int>("ReplayCount")
+                        .HasColumnType("INT");
 
                     b.Property<DateTimeOffset?>("RetainUntilUtc")
                         .HasColumnType("DATETIME");
@@ -206,6 +215,10 @@ namespace DrasiWake.Persistence.SonnetDB.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("INT");
 
+                    b.Property<Guid?>("SupersededByOutboxId")
+                        .HasMaxLength(64)
+                        .HasColumnType("STRING");
+
                     b.Property<string>("TraceId")
                         .HasMaxLength(256)
                         .HasColumnType("STRING");
@@ -218,6 +231,8 @@ namespace DrasiWake.Persistence.SonnetDB.Migrations
 
                     b.HasIndex("IdempotencyKey")
                         .IsUnique();
+
+                    b.HasIndex("Status", "CreatedAtUtc");
 
                     b.HasIndex("NextAttemptAtUtc", "CreatedAtUtc", "Id");
 

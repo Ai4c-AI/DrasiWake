@@ -11,16 +11,21 @@ using DrasiWake.Adapters.OpenClaw;
 using DrasiWake.Core.Abstractions;
 using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Pipeline;
+using DrasiWake.Host.Admin;
+using DrasiWake.Host.Health;
 using DrasiWake.Persistence.Raft;
 using DrasiWake.Persistence.SonnetDB;
 using DrasiWake.Persistence.SonnetDB.Replication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
@@ -78,7 +83,11 @@ public static class DrasiWakeHostBuilder
         builder.ConfigureWebHostDefaults(webBuilder =>
         {
             webBuilder.ConfigureKestrel((context, options) =>
-                ConfigureRaftListener(options, DrasiWakeHostSettings.FromConfiguration(context.Configuration)));
+            {
+                var hostSettings = DrasiWakeHostSettings.FromConfiguration(context.Configuration);
+                ConfigureRaftListener(options, hostSettings);
+                ConfigureAdminListener(options, hostSettings);
+            });
             webBuilder.Configure(app =>
             {
                 var cluster = app.ApplicationServices.GetRequiredService<RaftClusterSettings>();
@@ -93,6 +102,11 @@ public static class DrasiWakeHostBuilder
                                 endpoints.MapGrpcService<ClusterMembershipGrpcService>());
                         });
                 }
+
+                var admin = app.ApplicationServices.GetRequiredService<DrasiWakeHostSettings>().Admin;
+                app.MapWhen(
+                    context => context.Connection.LocalPort == admin.ApiAddress.Port,
+                    adminBranch => adminBranch.MapAdminApi());
 
                 app.UseConsensusProtocolHandler();
             });
@@ -138,6 +152,17 @@ public static class DrasiWakeHostBuilder
                     endpoint.UseHttps(certificate!);
                 });
             }
+        }
+    }
+
+    private static void ConfigureAdminListener(
+        KestrelServerOptions options,
+        DrasiWakeHostSettings hostSettings)
+    {
+        foreach (var address in ResolveAddresses(hostSettings.Admin.ApiAddress))
+        {
+            options.Listen(address, hostSettings.Admin.ApiAddress.Port, endpoint =>
+                endpoint.Protocols = HttpProtocols.Http1AndHttp2);
         }
     }
 
@@ -227,10 +252,13 @@ public static class DrasiWakeHostBuilder
         services.AddHttpClient<DrasiServerClient>();
         services.AddHttpClient(RaftHttpClientName);
         services.AddHttpClient(ManagementHttpClientName);
-        services.AddSingleton<IChangeSource>(provider => new DrasiChangeSource(
-            provider.GetRequiredService<DrasiServerClient>(),
-            settings.Drasi,
-            provider.GetRequiredService<TimeProvider>()));
+        services.AddHttpClient(DownstreamProbeService.HttpClientName);
+        services.AddSingleton<DrasiChangeSource>();
+        services.AddSingleton<IChangeSource>(provider => provider.GetRequiredService<DrasiChangeSource>());
+        services.AddSingleton<RecoveryReadiness>();
+        services.AddSingleton<DownstreamProbeService>();
+        services.AddHostedService(provider => provider.GetRequiredService<DownstreamProbeService>());
+        RegisterHealthChecks(services, settings);
         services.AddSingleton<IWakeSink>(provider => new TargetRoutedWakeSink(
             provider.GetRequiredService<IHttpClientFactory>(),
             settings.OpenClaw,
@@ -263,4 +291,31 @@ public static class DrasiWakeHostBuilder
             .WithTracing(tracing => tracing.AddSource(BridgeTelemetry.ActivitySourceName))
             .WithMetrics(metrics => metrics.AddMeter(BridgeTelemetry.MeterName));
     }
+
+    private static void RegisterHealthChecks(IServiceCollection services, DrasiWakeHostSettings settings)
+    {
+        var builder = services.AddHealthChecks()
+            .AddCheck<HostAliveCheck>("host", tags: [HealthCheckTags.Liveness])
+            .AddCheck<RaftHealthCheck>("raft")
+            .AddCheck<RegistryHealthCheck>("registry")
+            .AddCheck<DatabaseHealthCheck>("database")
+            .AddCheck<RecoveryHealthCheck>("recovery")
+            .AddCheck<DrasiHealthCheck>("drasi")
+            .AddCheck<OpenClawAggregateHealthCheck>("openclaw");
+        foreach (var targetName in settings.OpenClawTargets.Keys)
+        {
+            builder.Add(new HealthCheckRegistration(
+                $"openclaw:{targetName}",
+                serviceProvider => new OpenClawTargetHealthCheck(
+                    targetName,
+                    serviceProvider.GetRequiredService<DownstreamProbeService>()),
+                failureStatus: null,
+                tags: null));
+        }
+    }
+}
+
+internal static class HealthCheckTags
+{
+    public const string Liveness = "liveness";
 }

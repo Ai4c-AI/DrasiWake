@@ -1,8 +1,14 @@
 {
   "DrasiWake": {
-    "Drasi": { "ServerUri": "https://drasi.example.test/" },
-    "Database": { "Path": "C:\\DrasiWake\\node-c\\sonnetdb" },
-    "Registry": { "Path": "C:\\DrasiWake\\contracts\\bindings.yaml" },
+    "Drasi": {
+      "ServerUri": "https://drasi.example.test/"
+    },
+    "Database": {
+      "Path": "C:\\DrasiWake\\node-c\\sonnetdb"
+    },
+    "Registry": {
+      "Path": "C:\\DrasiWake\\contracts\\bindings.yaml"
+    },
     "OpenClaw": {
       "Targets": {
         "production-gateway": {
@@ -21,9 +27,17 @@
         "https://node-b.example.test:5101/",
         "https://node-c.example.test:5101/"
       ],
-      "Certificate": { "Path": "C:\\DrasiWake\\node-c\\certificates\\node-c.pfx" },
-      "Management": { "Address": "https://node-c.example.test:5102/" },
+      "Certificate": {
+        "Path": "C:\\DrasiWake\\node-c\\certificates\\node-c.pfx"
+      },
+      "Management": {
+        "Address": "https://node-c.example.test:5102/"
+      },
       "SnapshotFrequency": 1000
+    },
+    "Admin": {
+      "ApiAddress": "http://node-c.example.test:5103/",
+      "DownstreamProbeInterval": "00:00:10"
     }
   }
 }

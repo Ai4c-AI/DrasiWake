@@ -5,6 +5,26 @@ using Microsoft.Extensions.Configuration;
 
 namespace DrasiWake.Host;
 
+/// <summary>Admin plane settings: health endpoints, downstream probing and readiness thresholds.</summary>
+public sealed record AdminSettings(
+    Uri ApiAddress,
+    TimeSpan DownstreamProbeInterval,
+    TimeSpan CommitLagDegradedAfter,
+    string? BearerToken)
+{
+    public void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(ApiAddress);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(DownstreamProbeInterval, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(CommitLagDegradedAfter, TimeSpan.Zero);
+        if (ApiAddress.Host is "0.0.0.0" or "::" or "[::]")
+        {
+            throw new InvalidOperationException(
+                "DrasiWake:Admin:ApiAddress must bind an explicit host name or address; wildcard bindings are not allowed.");
+        }
+    }
+}
+
 public sealed record DrasiWakeHostSettings(
     DrasiServerOptions Drasi,
     OpenClawOptions OpenClaw,
@@ -16,7 +36,8 @@ public sealed record DrasiWakeHostSettings(
     TimeSpan ReconciliationInterval,
     TimeSpan ShutdownTimeout,
     TimeSpan DispatchPollInterval,
-    RaftClusterSettings Cluster)
+    RaftClusterSettings Cluster,
+    AdminSettings Admin)
 {
     public static DrasiWakeHostSettings FromConfiguration(IConfiguration configuration)
     {
@@ -53,7 +74,8 @@ public sealed record DrasiWakeHostSettings(
             ReadTimeSpan(configuration, "DrasiWake:ReconciliationInterval", TimeSpan.FromMinutes(1)),
             ReadTimeSpan(configuration, "DrasiWake:ShutdownTimeout", TimeSpan.FromSeconds(30)),
             ReadTimeSpan(configuration, "DrasiWake:DispatchPollInterval", TimeSpan.FromMilliseconds(250)),
-            clusterSettings);
+            clusterSettings,
+            ReadAdminSettings(configuration));
     }
 
     public void Validate()
@@ -75,6 +97,37 @@ public sealed record DrasiWakeHostSettings(
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ReconciliationInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ShutdownTimeout, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(DispatchPollInterval, TimeSpan.Zero);
+        Admin.Validate();
+        if (Admin.ApiAddress.Port == Cluster.ListenAddress.Port)
+        {
+            throw new InvalidOperationException(
+                "DrasiWake:Admin:ApiAddress port must differ from the Raft listen port.");
+        }
+        if (Cluster.ManagementAddress is { } managementAddress && Admin.ApiAddress.Port == managementAddress.Port)
+        {
+            throw new InvalidOperationException(
+                "DrasiWake:Admin:ApiAddress port must differ from the cluster management port.");
+        }
+    }
+
+    private static AdminSettings ReadAdminSettings(IConfiguration configuration)
+    {
+        var addressValue = configuration["DrasiWake:Admin:ApiAddress"] ?? "http://127.0.0.1:5103/";
+        if (!Uri.TryCreate(addressValue, UriKind.Absolute, out var address) ||
+            (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) ||
+            address.PathAndQuery != "/" ||
+            address.Fragment.Length > 0 ||
+            address.UserInfo.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "Configuration 'DrasiWake:Admin:ApiAddress' must be an absolute HTTP or HTTPS URI with an empty path, no query, fragment or userinfo.");
+        }
+
+        return new AdminSettings(
+            address,
+            ReadTimeSpan(configuration, "DrasiWake:Admin:DownstreamProbeInterval", TimeSpan.FromSeconds(10)),
+            ReadTimeSpan(configuration, "DrasiWake:Admin:CommitLagDegradedAfter", TimeSpan.FromSeconds(5)),
+            configuration["DrasiWake:Admin:BearerToken"]);
     }
 
     private static string ReadRequired(IConfiguration configuration, string key)

@@ -1,4 +1,5 @@
 using DrasiWake.Core.Pipeline;
+using DrasiWake.Host.Health;
 
 namespace DrasiWake.Host;
 
@@ -14,12 +15,14 @@ public interface ILeaderEpochWorker
 public sealed class LeaderWorkerRuntime(
     IRaftLeaderStartupPreparation preparation,
     IRecoveryCoordinator recovery,
-    IEnumerable<ILeaderEpochWorker> workers) : ILeaderWorkerRuntime
+    IEnumerable<ILeaderEpochWorker> workers,
+    RecoveryReadiness? readiness = null) : ILeaderWorkerRuntime
 {
     private readonly IRaftLeaderStartupPreparation _preparation =
         preparation ?? throw new ArgumentNullException(nameof(preparation));
     private readonly IRecoveryCoordinator _recovery = recovery ?? throw new ArgumentNullException(nameof(recovery));
     private readonly ILeaderEpochWorker[] _workers = workers?.ToArray() ?? throw new ArgumentNullException(nameof(workers));
+    private readonly RecoveryReadiness? _readiness = readiness;
     private readonly List<ILeaderEpochWorker> startedWorkers = [];
     private CancellationTokenSource? stopping;
     private Task completion = Task.CompletedTask;
@@ -43,6 +46,7 @@ public sealed class LeaderWorkerRuntime(
         {
             throw new RetryableLeaderRecoveryException(exception);
         }
+        _readiness?.MarkInitialized(true);
         foreach (var worker in _workers)
         {
             stopping.Token.ThrowIfCancellationRequested();
@@ -56,6 +60,7 @@ public sealed class LeaderWorkerRuntime(
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         stopping?.Cancel();
+        _readiness?.MarkInitialized(false);
         if (stopping is null)
             return;
 

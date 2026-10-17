@@ -54,6 +54,7 @@ public sealed class RaftBridgeStore(
         string bindingId,
         string sessionId,
         string currentFingerprint,
+        Guid? supersededByOutboxId,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bindingId);
@@ -61,8 +62,35 @@ public sealed class RaftBridgeStore(
         ArgumentException.ThrowIfNullOrWhiteSpace(currentFingerprint);
         var command = ReplicatedBridgeCommand.Create(
             BridgeCommandKind.SupersedePendingWakes,
-            new SupersedePendingWakesPayload(bindingId, sessionId, currentFingerprint));
+            new SupersedePendingWakesPayload(bindingId, sessionId, currentFingerprint, supersededByOutboxId));
         return _commandExecutor.ReplicateAsync(command, cancellationToken);
+    }
+
+    public async ValueTask<WakeOutboxItem> ReplayDeadLetterAsync(
+        Guid outboxId,
+        DateTimeOffset replayedAtUtc,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        if (outboxId == Guid.Empty)
+            throw new ArgumentException("A dead-letter replay must reference a non-empty outbox ID.", nameof(outboxId));
+        if (replayedAtUtc == default)
+            throw new ArgumentException("A dead-letter replay must carry a replay timestamp.", nameof(replayedAtUtc));
+
+        var wake = await _projection.ReadWakeAsync(outboxId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Outbox item '{outboxId}' does not exist.");
+        if (wake.Status is not (WakeOutboxStatus.DeadLetter or WakeOutboxStatus.Superseded))
+            throw new InvalidOperationException(
+                $"Outbox item in state '{wake.Status}' cannot be replayed; only dead letters and superseded items can.");
+
+        var command = ReplicatedBridgeCommand.Create(
+            BridgeCommandKind.ReplayDeadLetter,
+            new ReplayDeadLetterPayload(outboxId, replayedAtUtc, reason));
+        await _commandExecutor.ReplicateAsync(command, cancellationToken).ConfigureAwait(false);
+
+        return await _projection.ReadWakeAsync(outboxId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Committed dead-letter replay command '{command.CommandId}' has no matching projection result.");
     }
 
     public async ValueTask<IReadOnlyList<WakeOutboxItem>> LoadDispatchableAsync(

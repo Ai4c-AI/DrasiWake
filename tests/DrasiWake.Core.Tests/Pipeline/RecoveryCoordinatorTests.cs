@@ -163,8 +163,11 @@ public sealed class RecoveryCoordinatorTests
         public ValueTask RecordRejectedWakeAsync(WakeOutboxItem item, string reasonCode, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
 
-        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, CancellationToken cancellationToken)
+        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, Guid? supersededByOutboxId, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
+
+        public ValueTask<WakeOutboxItem> ReplayDeadLetterAsync(Guid outboxId, DateTimeOffset replayedAtUtc, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException("Dead-letter replay is not exercised by recovery tests.");
 
         public ValueTask<IReadOnlyList<WakeOutboxItem>> LoadDispatchableAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<WakeOutboxItem>>(items.Where(item => item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled).Take(limit).ToArray());

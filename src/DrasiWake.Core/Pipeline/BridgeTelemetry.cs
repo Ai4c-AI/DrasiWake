@@ -37,6 +37,8 @@ public static class BridgeTelemetry
     private static readonly Histogram<double> RaftRecoveryDuration = Meter.CreateHistogram<double>("drasiwake.raft.leader.recovery.duration", "ms");
     private static readonly Histogram<double> RaftFailoverDuration = Meter.CreateHistogram<double>("drasiwake.raft.failover.duration", "ms");
     private static readonly Histogram<double> RaftCatchupDuration = Meter.CreateHistogram<double>("drasiwake.raft.follower.catchup.duration", "ms");
+    private static readonly Counter<long> HealthChecks = Meter.CreateCounter<long>("drasiwake.health.checks");
+    private static readonly Counter<long> DownstreamProbeFailures = Meter.CreateCounter<long>("drasiwake.downstream.probe.failures");
     private static readonly ConcurrentDictionary<long, Func<RaftNodeObservation>> RaftNodes = new();
     private static long nextRaftNode;
     private static readonly ObservableGauge<long> RaftRole = Meter.CreateObservableGauge(
@@ -198,6 +200,23 @@ public static class BridgeTelemetry
 
     public static void RecordExecutionStatusFailure(WakeOutboxItem item)
         => ExecutionStatusFailures.Add(1, WakeTags(item));
+
+    public static void RecordHealthCheck(string check, string outcome)
+        => HealthChecks.Add(1, new TagList { { "check", check }, { "outcome", outcome } });
+
+    public static void RecordDownstreamProbeFailure(string downstream, string errorClass)
+        => DownstreamProbeFailures.Add(1, new TagList
+        {
+            { "downstream", StableId(downstream) },
+            { "error.class", errorClass }
+        });
+
+    public static Activity? StartDownstreamProbe(string downstream)
+    {
+        var activity = ActivitySource.StartActivity("admin.downstream.probe");
+        activity?.SetTag("downstream.id", StableId(downstream));
+        return activity;
+    }
 
     public static string StableId(string value)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16].ToLowerInvariant();

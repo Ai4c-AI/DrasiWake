@@ -47,7 +47,7 @@ public sealed class RaftBridgeStoreTests
                 Assert.Equal("payload.invalid", payload.ReasonCode);
             });
 
-        await store.SupersedePendingWakesAsync("binding", "session", "new-fingerprint", cancellationToken);
+        await store.SupersedePendingWakesAsync("binding", "session", "new-fingerprint", null, cancellationToken);
         AssertCommand<SupersedePendingWakesPayload>(
             executor, 2, BridgeCommandKind.SupersedePendingWakes,
             payload =>
@@ -55,6 +55,7 @@ public sealed class RaftBridgeStoreTests
                 Assert.Equal("binding", payload.BindingId);
                 Assert.Equal("session", payload.SessionId);
                 Assert.Equal("new-fingerprint", payload.CurrentFingerprint);
+                Assert.Null(payload.SupersededByOutboxId);
             });
 
         var candidate = wake with
@@ -233,6 +234,110 @@ public sealed class RaftBridgeStoreTests
             new SetConfigurationFingerprintPayload("still-healthy"));
         await executor.ReplicateAsync(nextCommand, TestContext.Current.CancellationToken);
         Assert.Equal(4, await database.Projection.GetLastAppliedIndexAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Reclaiming_an_already_claimed_batch_returns_no_rows()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var wake = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-1));
+        await ApplyCommandAsync(
+            database.Projection,
+            BridgeCommandKind.CreateOrUpdatePendingWake,
+            new CreateOrUpdatePendingWakePayload(wake),
+            TestContext.Current.CancellationToken);
+        var store = new RaftBridgeStore(new ProjectionBackedExecutor(database.Projection), database.Projection);
+
+        var now = DateTimeOffset.UtcNow;
+        var claimed = Assert.Single(await store.LoadDispatchableAsync(now, 10, TestContext.Current.CancellationToken));
+        Assert.Equal(wake.Id, claimed.Id);
+        var reclaimed = await store.LoadDispatchableAsync(now.AddMinutes(1), 10, TestContext.Current.CancellationToken);
+
+        Assert.Empty(reclaimed);
+    }
+
+    [Fact]
+    public async Task LoadDispatchable_claims_candidates_with_the_exact_claim_command_and_records_first_dispatch()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var first = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-2)) with { SnapshotFingerprint = $"fp-{Guid.NewGuid():N}" };
+        var second = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-1)) with { SnapshotFingerprint = $"fp-{Guid.NewGuid():N}" };
+        await ApplyCommandAsync(
+            database.Projection, BridgeCommandKind.CreateOrUpdatePendingWake,
+            new CreateOrUpdatePendingWakePayload(first), TestContext.Current.CancellationToken);
+        await ApplyCommandAsync(
+            database.Projection, BridgeCommandKind.CreateOrUpdatePendingWake,
+            new CreateOrUpdatePendingWakePayload(second), TestContext.Current.CancellationToken);
+        var executor = new ProjectionBackedExecutor(database.Projection);
+        var store = new RaftBridgeStore(executor, database.Projection);
+
+        // SonnetDB DATETIME only keeps millisecond precision — truncate up front so
+        // FirstDispatchedAtUtc comparisons match what the projection persists.
+        var claimAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var claimed = await store.LoadDispatchableAsync(claimAt, 10, TestContext.Current.CancellationToken);
+
+        var claimCommand = Assert.Single(
+            executor.Commands, command => command.Kind == BridgeCommandKind.ClaimDispatchable);
+        Assert.Equal(2, claimed.Count);
+        Assert.All(claimed, item =>
+        {
+            Assert.Equal(WakeOutboxStatus.Dispatching, item.Status);
+            Assert.Equal(claimAt, item.FirstDispatchedAtUtc);
+        });
+
+        var snapshot = await database.Projection.ExportSnapshotAsync(TestContext.Current.CancellationToken);
+        Assert.All(snapshot.WakeOutbox, item =>
+        {
+            Assert.Equal(claimCommand.CommandId, item.ClaimCommandId);
+            Assert.Equal(claimAt, item.FirstDispatchedAtUtc);
+        });
+    }
+
+    [Fact]
+    public async Task ReplayDeadLetter_replays_dead_letters_and_rejects_unclaimed_states()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var dead = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-2)) with { SnapshotFingerprint = $"fp-{Guid.NewGuid():N}" };
+        var live = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-1)) with { SnapshotFingerprint = $"fp-{Guid.NewGuid():N}" };
+        await ApplyCommandAsync(
+            database.Projection, BridgeCommandKind.CreateOrUpdatePendingWake,
+            new CreateOrUpdatePendingWakePayload(dead), TestContext.Current.CancellationToken);
+        await ApplyCommandAsync(
+            database.Projection, BridgeCommandKind.CreateOrUpdatePendingWake,
+            new CreateOrUpdatePendingWakePayload(live), TestContext.Current.CancellationToken);
+        var store = new RaftBridgeStore(new ProjectionBackedExecutor(database.Projection), database.Projection);
+
+        // Both wakes are claimable (unique fingerprints) — claim them all, then pick
+        // the dead-letter candidate by id before driving it to the dead-letter state.
+        var claimBatch = await store.LoadDispatchableAsync(
+            DateTimeOffset.UtcNow, 10, TestContext.Current.CancellationToken);
+        var claimed = claimBatch.Single(item => item.Id == dead.Id);
+        await store.MarkDeadLetterAsync(claimed.Id, "dispatch.retry_exhausted", TestContext.Current.CancellationToken);
+
+        var replayedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds());
+        var replayed = await store.ReplayDeadLetterAsync(
+            dead.Id, replayedAt, "operator-replay", TestContext.Current.CancellationToken);
+
+        Assert.Equal(WakeOutboxStatus.Pending, replayed.Status);
+        Assert.Equal(dead.IdempotencyKey, replayed.IdempotencyKey);
+        Assert.Equal(replayedAt, replayed.NextAttemptAtUtc);
+        Assert.Equal(1, replayed.ReplayCount);
+        Assert.Equal(replayedAt, replayed.LastReplayedAtUtc);
+        Assert.Equal(DateTimeOffset.UtcNow.Date, replayed.FirstDispatchedAtUtc!.Value.Date);
+        var replaySnapshotRow = Assert.Single(
+            (await database.Projection.ExportSnapshotAsync(TestContext.Current.CancellationToken)).WakeOutbox,
+            item => item.Id == dead.Id);
+        Assert.Equal("dispatch.replayed", replaySnapshotRow.LastErrorCode);
+        Assert.Null(replaySnapshotRow.ClaimCommandId);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReplayDeadLetterAsync(
+            live.Id, replayedAt.AddMinutes(1), "operator-replay", TestContext.Current.CancellationToken).AsTask());
+        Assert.Equal(1, replayed.ReplayCount);
+        // live was claimed by the batch above, so it sits in Dispatching; the rejected
+        // replay must not have mutated it into a replayed state.
+        var untouchedLive = await database.Projection.ReadWakeAsync(live.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(WakeOutboxStatus.Dispatching, untouchedLive!.Status);
+        Assert.Equal(0, untouchedLive.ReplayCount);
     }
 
     [Fact]

@@ -158,6 +158,31 @@ public sealed class CrashRecoveryTests
         Assert.Equal(1, fixture.GatewayHandler.ExecutionCount);
     }
 
+    [Fact]
+    public async Task FirstDispatchedAt_survives_crash_and_recovery_without_losing_the_original_claim_time()
+    {
+        await using var fixture = await BridgeTestFixture.CreateAsync(TestContext.Current.CancellationToken);
+        var pending = await CreatePendingWakeAsync(fixture);
+        var claimTime = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddSeconds(1).ToUnixTimeMilliseconds());
+        var claimed = Assert.Single(await fixture.Store.LoadDispatchableAsync(
+            claimTime, 10, TestContext.Current.CancellationToken));
+
+        Assert.Equal(WakeOutboxStatus.Dispatching, claimed.Status);
+        Assert.Equal(claimTime, claimed.FirstDispatchedAtUtc);
+
+        await fixture.RestartDatabaseAsync(TestContext.Current.CancellationToken);
+        var reopenedStore = fixture.CreateStore();
+        var recoveryState = await reopenedStore.LoadRecoveryStateAsync(TestContext.Current.CancellationToken);
+
+        var recovered = Assert.Single(recoveryState.DispatchableItems);
+        var row = Assert.Single(await fixture.ReadOutboxAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(pending.Id, recovered.Id);
+        Assert.Equal(WakeOutboxStatus.RetryScheduled, row.Status);
+        Assert.Equal("dispatch.recovered", row.LastErrorCode);
+        Assert.Null(row.ClaimCommandId);
+        Assert.Equal(claimTime, row.FirstDispatchedAtUtc);
+    }
+
     private static async Task<WakeOutboxItem> CreatePendingWakeAsync(BridgeTestFixture fixture)
     {
         fixture.DrasiHandler.SetResults("{\"orderId\":\"order-42\",\"state\":\"ready\"}");

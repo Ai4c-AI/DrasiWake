@@ -29,4 +29,8 @@ public sealed record WakeOutboxItem(
     WakeOutboxStatus Status,
     string? InvocationId,
     string? TraceId,
-    string OpenClawTarget);
+    string OpenClawTarget,
+    DateTimeOffset? FirstDispatchedAtUtc = null,
+    Guid? SupersededByOutboxId = null,
+    int ReplayCount = 0,
+    DateTimeOffset? LastReplayedAtUtc = null);

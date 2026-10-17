@@ -135,9 +135,11 @@ public sealed class RaftBridgeStateMachineTests
             ReplicatedBridgeCommand.Create(BridgeCommandKind.UpsertKeyMapping,
                 new UpsertKeyMappingPayload(mapping)),
             ReplicatedBridgeCommand.Create(BridgeCommandKind.RemoveKeyMapping,
-                new RemoveKeyMappingPayload("scope", "identity"))
+                new RemoveKeyMappingPayload("scope", "identity")),
+            ReplicatedBridgeCommand.Create(BridgeCommandKind.ReplayDeadLetter,
+                new ReplayDeadLetterPayload(wake.Id, now.AddMinutes(5), "operator-replay"))
         };
-        Assert.Equal(15, commands.Length);
+        Assert.Equal(16, commands.Length);
 
         foreach (var supportedCommand in commands)
         {

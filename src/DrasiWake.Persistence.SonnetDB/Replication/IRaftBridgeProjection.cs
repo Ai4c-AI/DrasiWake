@@ -1,3 +1,4 @@
+using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 
 namespace DrasiWake.Persistence.SonnetDB.Replication;
@@ -29,4 +30,9 @@ public interface IRaftBridgeProjection
         CancellationToken cancellationToken);
     ValueTask<WakeOutboxItem?> ReadWakeAsync(Guid outboxId, CancellationToken cancellationToken);
     ValueTask<RecoveryState> ReadRecoveryStateAsync(CancellationToken cancellationToken);
+
+    /// <summary>Admin read path: filtered outbox listing with keyset pagination (CreatedAtUtc, Id desc).</summary>
+    ValueTask<IReadOnlyList<WakeOutboxItem>> QueryOutboxAsync(
+        OutboxQuery query,
+        CancellationToken cancellationToken);
 }

@@ -118,7 +118,7 @@ public sealed class AtomicAcceptanceTests
                     item => item.BindingId == pendingWake.BindingId && item.SessionId == pendingWake.SessionId,
                     TestContext.Current.CancellationToken);
 
-            Assert.Equal(4, migrations.Count());
+            Assert.Equal(5, migrations.Count());
             Assert.Equal(WakeOutboxStatus.Accepted, persistedWake.Status);
             Assert.Equal(pendingWake.OpenClawTarget, persistedWake.OpenClawTarget);
             Assert.Equal(pendingWake.SnapshotFingerprint, persistedCheckpoint.Fingerprint);

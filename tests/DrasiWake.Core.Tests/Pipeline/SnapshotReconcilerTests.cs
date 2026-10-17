@@ -227,7 +227,7 @@ public sealed class SnapshotReconcilerTests
             return ValueTask.FromResult(item);
         }
 
-        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, CancellationToken cancellationToken)
+        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, Guid? supersededByOutboxId, CancellationToken cancellationToken)
         {
             for (var index = 0; index < outboxItems.Count; index++)
             {
@@ -236,11 +236,14 @@ public sealed class SnapshotReconcilerTests
                     item.SnapshotFingerprint != currentFingerprint &&
                     item.Status is WakeOutboxStatus.Pending or WakeOutboxStatus.RetryScheduled)
                 {
-                    outboxItems[index] = item with { Status = WakeOutboxStatus.Superseded };
+                    outboxItems[index] = item with { Status = WakeOutboxStatus.Superseded, SupersededByOutboxId = supersededByOutboxId };
                 }
             }
             return ValueTask.CompletedTask;
         }
+
+        public ValueTask<WakeOutboxItem> ReplayDeadLetterAsync(Guid outboxId, DateTimeOffset replayedAtUtc, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException("Dead-letter replay is not exercised by reconciler tests.");
 
         public ValueTask RecordRejectedWakeAsync(WakeOutboxItem item, string reasonCode, CancellationToken cancellationToken)
         {

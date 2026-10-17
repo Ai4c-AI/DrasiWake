@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data;
 using System.Text.Json.Nodes;
+using DrasiWake.Core.Contracts;
 using DrasiWake.Core.Domain;
 using DrasiWake.Persistence.SonnetDB.Entities;
 using DrasiWake.Persistence.SonnetDB.Replication;
@@ -155,7 +156,8 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
                 item.OpenClawTarget, item.InputJson, item.ContractVersion, item.IdempotencyKey,
                 item.AttemptCount, item.CreatedAtUtc, item.NextAttemptAtUtc, item.Status,
                 item.InvocationId, item.TraceId, item.LastErrorCode, item.RetainUntilUtc, item.Version,
-                item.ClaimCommandId))
+                item.ClaimCommandId, item.FirstDispatchedAtUtc, item.SupersededByOutboxId,
+                item.ReplayCount, item.LastReplayedAtUtc))
             .ToListAsync(cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
@@ -231,7 +233,11 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             LastErrorCode = item.LastErrorCode,
             RetainUntilUtc = item.RetainUntilUtc,
             Version = item.Version,
-            ClaimCommandId = item.ClaimCommandId
+            ClaimCommandId = item.ClaimCommandId,
+            FirstDispatchedAtUtc = item.FirstDispatchedAtUtc,
+            SupersededByOutboxId = item.SupersededByOutboxId,
+            ReplayCount = item.ReplayCount,
+            LastReplayedAtUtc = item.LastReplayedAtUtc
         }));
 
         var state = await context.RaftProjectionStates.SingleOrDefaultAsync(
@@ -341,6 +347,40 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             .SingleOrDefaultAsync(item => item.Id == outboxId, cancellationToken);
         return wake is null ? null : ToDomain(wake);
     }
+
+    public async ValueTask<IReadOnlyList<WakeOutboxItem>> QueryOutboxAsync(
+        OutboxQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfLessThan(query.Limit, 1);
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        using var databaseLock = await AcquireDatabaseLockAsync(context, cancellationToken);
+        var items = context.WakeOutbox.AsNoTracking();
+        if (query.Statuses is { Count: > 0 })
+        {
+            var statuses = query.Statuses;
+            items = items.Where(item => statuses.Contains(item.Status));
+        }
+        if (query.BindingId is { Length: > 0 } bindingId)
+            items = items.Where(item => item.BindingId == bindingId);
+        if (query.SessionId is { Length: > 0 } sessionId)
+            items = items.Where(item => item.SessionId == sessionId);
+        if (query.CursorCreatedBeforeUtc is { } cursorCreated)
+        {
+            var cursorId = query.CursorIdBefore ?? Guid.Empty;
+            items = items.Where(item =>
+                item.CreatedAtUtc < cursorCreated ||
+                (item.CreatedAtUtc == cursorCreated && item.Id.CompareTo(cursorId) < 0));
+        }
+
+        var rows = await items
+            .OrderByDescending(item => item.CreatedAtUtc)
+            .ThenByDescending(item => item.Id)
+            .Take(query.Limit)
+            .ToListAsync(cancellationToken);
+        return rows.Select(ToDomain).ToArray();
+    }
     private static async ValueTask ApplyCommandAsync(
         BridgeDbContext context,
         RaftProjectionState state,
@@ -363,7 +403,8 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             {
                 var payload = command.DeserializePayload<SupersedePendingWakesPayload>();
                 await ApplySupersedePendingWakesAsync(
-                    context, payload.BindingId, payload.SessionId, payload.CurrentFingerprint, cancellationToken);
+                    context, payload.BindingId, payload.SessionId, payload.CurrentFingerprint,
+                    payload.SupersededByOutboxId, cancellationToken);
                 break;
             }
             case BridgeCommandKind.ClaimDispatchable:
@@ -390,6 +431,10 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             case BridgeCommandKind.RecoverInterruptedDispatches:
                 await ApplyInterruptedRecoveryAsync(
                     context, command.DeserializePayload<RecoverInterruptedDispatchesPayload>(), cancellationToken);
+                break;
+            case BridgeCommandKind.ReplayDeadLetter:
+                await ApplyReplayDeadLetterAsync(
+                    context, command.DeserializePayload<ReplayDeadLetterPayload>(), cancellationToken);
                 break;
             case BridgeCommandKind.EnsureOpenClawTargets:
                 await ApplyOpenClawTargetsAsync(
@@ -493,6 +538,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         string bindingId,
         string sessionId,
         string currentFingerprint,
+        Guid? supersededByOutboxId,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bindingId);
@@ -508,6 +554,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         {
             wake.Status = WakeOutboxStatus.Superseded;
             wake.LastErrorCode = "snapshot.superseded";
+            wake.SupersededByOutboxId = supersededByOutboxId;
             wake.Version++;
         }
     }
@@ -535,6 +582,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
                 continue;
             item.Status = WakeOutboxStatus.Dispatching;
             item.ClaimCommandId = claimCommandId;
+            item.FirstDispatchedAtUtc ??= payload.ClaimedAtUtc;
             item.Version++;
         }
     }
@@ -667,6 +715,31 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             item.LastErrorCode = "dispatch.recovered";
             item.Version++;
         }
+    }
+
+    private static async ValueTask ApplyReplayDeadLetterAsync(
+        BridgeDbContext context,
+        ReplayDeadLetterPayload payload,
+        CancellationToken cancellationToken)
+    {
+        if (payload.OutboxId == Guid.Empty)
+            throw new InvalidOperationException("A dead-letter replay must reference a non-empty outbox ID.");
+        if (payload.ReplayedAtUtc == default)
+            throw new InvalidOperationException("A dead-letter replay must carry a replay timestamp.");
+        var wake = await context.WakeOutbox
+            .SingleOrDefaultAsync(item => item.Id == payload.OutboxId, cancellationToken)
+            ?? throw new InvalidOperationException($"Outbox item '{payload.OutboxId}' does not exist.");
+        if (wake.Status is not (WakeOutboxStatus.DeadLetter or WakeOutboxStatus.Superseded))
+            throw new InvalidOperationException(
+                $"Outbox item in state '{wake.Status}' cannot be replayed; only dead letters and superseded items can.");
+
+        wake.Status = WakeOutboxStatus.Pending;
+        wake.NextAttemptAtUtc = payload.ReplayedAtUtc;
+        wake.ClaimCommandId = null;
+        wake.LastErrorCode = "dispatch.replayed";
+        wake.ReplayCount++;
+        wake.LastReplayedAtUtc = payload.ReplayedAtUtc;
+        wake.Version++;
     }
 
     private static async ValueTask ApplyOpenClawTargetsAsync(
@@ -844,7 +917,7 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
             ValidateRequired(item.InputJson, nameof(item.InputJson));
             ValidateRequired(item.ContractVersion, nameof(item.ContractVersion));
             ValidateRequired(item.IdempotencyKey, nameof(item.IdempotencyKey));
-            if (item.AttemptCount < 0 || item.Version < 0 ||
+            if (item.AttemptCount < 0 || item.Version < 0 || item.ReplayCount < 0 ||
                 item.CreatedAtUtc == default || item.NextAttemptAtUtc == default ||
                 !Enum.IsDefined(item.Status))
                 throw new InvalidOperationException($"Snapshot outbox item '{item.Id}' has invalid required fields.");
@@ -890,6 +963,10 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         Status = item.Status,
         InvocationId = item.InvocationId,
         TraceId = item.TraceId,
+        FirstDispatchedAtUtc = item.FirstDispatchedAtUtc,
+        SupersededByOutboxId = item.SupersededByOutboxId,
+        ReplayCount = item.ReplayCount,
+        LastReplayedAtUtc = item.LastReplayedAtUtc,
         Version = 1
     };
 
@@ -909,7 +986,11 @@ public sealed class SonnetBridgeStore(IDbContextFactory<BridgeDbContext> context
         item.InvocationId,
         item.TraceId,
         item.OpenClawTarget ?? throw new InvalidOperationException(
-            $"Wake outbox item '{item.Id}' has no OpenClaw target."));
+            $"Wake outbox item '{item.Id}' has no OpenClaw target."),
+        item.FirstDispatchedAtUtc,
+        item.SupersededByOutboxId,
+        item.ReplayCount,
+        item.LastReplayedAtUtc);
 
     private static void Copy(WakeOutboxItem source, WakeOutbox target)
     {

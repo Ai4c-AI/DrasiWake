@@ -597,11 +597,14 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
         var listenPorts = new HashSet<int> { managementPort };
         var raftEndpoints = new Uri[4];
         var managementEndpoints = new Uri[4];
+        var adminEndpoints = new Uri[4];
         for (var index = 0; index < 4; index++)
         {
             var raftPort = FindUniquePort(addresses[index], listenPorts);
             raftEndpoints[index] = new Uri($"https://{addresses[index]}:{raftPort}/");
             managementEndpoints[index] = new Uri($"https://{addresses[index]}:{managementPort}/");
+            var adminPort = FindUniquePort(addresses[index], listenPorts);
+            adminEndpoints[index] = new Uri($"http://{addresses[index]}:{adminPort}/");
         }
 
         for (var index = 0; index < 4; index++)
@@ -619,6 +622,7 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
                 index,
                 raftEndpoints,
                 managementEndpoints[index],
+                adminEndpoints[index],
                 databasePath,
                 raftDataPath,
                 certificatePath);
@@ -626,6 +630,7 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
                 $"node-{index + 1}",
                 raftEndpoints[index],
                 managementEndpoints[index],
+                adminEndpoints[index],
                 databasePath,
                 raftDataPath,
                 configuration,
@@ -637,6 +642,7 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
         int nodeIndex,
         IReadOnlyList<Uri> raftEndpoints,
         Uri managementAddress,
+        Uri adminAddress,
         string databasePath,
         string raftDataPath,
         string certificatePath)
@@ -657,6 +663,8 @@ internal sealed class RaftClusterFixture : IAsyncDisposable
             ["DrasiWake:DispatchPollInterval"] = "00:00:00.100",
             ["DrasiWake:OpenClaw:MaxRetryAttempts"] = "0",
             ["DrasiWake:OpenClaw:Targets:sample-gateway:BaseAddress"] = localServices.BaseAddress.AbsoluteUri,
+            ["DrasiWake:Admin:ApiAddress"] = adminAddress.AbsoluteUri,
+            ["DrasiWake:Admin:DownstreamProbeInterval"] = "00:01:00",
             ["DrasiWake:OpenClaw:Targets:sample-gateway:GatewayIdempotencyRetention"] = "30.00:00:00",
             ["DrasiWake:Cluster:Mode"] = "Cluster",
             ["DrasiWake:Cluster:NodeId"] = $"node-{nodeIndex + 1}",
@@ -877,6 +885,7 @@ internal sealed class RaftClusterNode(
     string nodeId,
     Uri listenAddress,
     Uri managementAddress,
+    Uri adminAddress,
     string databasePath,
     string raftDataPath,
     IConfiguration configuration,
@@ -887,6 +896,7 @@ internal sealed class RaftClusterNode(
     public string NodeId { get; } = nodeId;
     public Uri ListenAddress { get; } = listenAddress;
     public Uri ManagementAddress { get; } = managementAddress;
+    public Uri AdminAddress { get; } = adminAddress;
     public string DatabasePath { get; } = databasePath;
     public string RaftDataPath { get; } = raftDataPath;
     public bool IsRunning => host is not null;

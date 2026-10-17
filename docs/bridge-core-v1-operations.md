@@ -26,6 +26,10 @@ Gateway 是 **at-least-once** 分发，不是 exactly-once。调用已被 Gatewa
 | 绑定注册表 | `DrasiWake__Registry__Path` | YAML 注册表路径。 |
 | 信号队列容量 | `DrasiWake__ChannelCapacity` | 有界内存提示队列；队列溢出时会将查询标记为待对账。 |
 | Worker 数量 | `DrasiWake__WorkerCount` | 并发会话 Worker 的最大数量。 |
+| 管理 API 地址 | `DrasiWake__Admin__ApiAddress` | 管理/健康 API 的监听地址，默认 `http://127.0.0.1:5103/`；必须为根路径的绝对 HTTP(S) URI，禁止通配绑定（`0.0.0.0`/`::`），且 TCP 端口必须与 Raft 监听端口和管理端口互不相同（启动校验失败会拒绝启动）。 |
+| 下游探测间隔 | `DrasiWake__Admin__DownstreamProbeInterval` | 对 Drasi 与每个 OpenClaw 目标的连通性探测周期，默认 `00:00:10`，必须为正。 |
+| Commit 滞后降级阈值 | `DrasiWake:Admin:CommitLagDegradedAfter`（环境键 `DrasiWake__Admin__CommitLagDegradedAfter`） | Follower commit 滞后持续超过该时长后 `/readyz` 降级为 `Degraded`，默认 `00:00:05`。 |
+| 管理 API 令牌 | `DrasiWake__Admin__BearerToken` | 配置后所有 `/admin/*` 请求必须携带 `Authorization: Bearer <token>`（常量时间比较）；未配置时仅允许本机回环调用。仅 secret provider 注入，环境键 `DrasiWake__Admin__BearerToken`，切勿提交到版本库。 |
 
 每个注册表绑定都必须包含 `openClawTarget`，且其值必须与配置的目标名称完全匹配。Host 启动时会逐目标验证幂等保留时长。目标凭据仅属于对应目标，建议由环境变量、User Secrets 或部署 secret provider 注入。
 
@@ -58,13 +62,69 @@ outbox 状态说明：
 | `DeadLetter` | 契约或载荷永久失败、调用结果不确定，或重试次数已耗尽；需要操作人员检查。 |
 | `Superseded` | 更新的权威快照替代了这个尚未被受理的唤醒。 |
 
+## 健康检查与管理平面
+
+Host 在 `DrasiWake:Admin:ApiAddress`（默认 `http://127.0.0.1:5103/`）上运行独立的管理 Kestrel 监听，与 Raft 端口、管理 gRPC 端口互不重叠（启动时校验三端口互异，冲突直接拒绝启动）。
+
+### 探针端点（始终匿名）
+
+| 端点 | 语义 |
+| --- | --- |
+| `GET /healthz` | Liveness：Host 进程存活即 200。 |
+| `GET /readyz` | Readiness：聚合全部健康检查，200=Healthy、200（含降级详情）=Degraded、503=Unhealthy。 |
+
+`/readyz` 的检查项包括：Host 初始化完成标记（由 Leader Worker Runtime 在 `RecoverAsync` 成功后置位）、Raft leadership/quorum（Follower 的 commit 滞后超过 `CommitLagDegradedAfter` 时降级为 `Degraded`）、绑定注册表、SonnetDB、恢复完成状态、Drasi 连接（非 Leader 节点以 standby 视角报告）以及各 OpenClaw 目标的连通性（单个目标不可达为 `Degraded`，全部不可达为 `Unhealthy`）。
+
+下游连通性由 `DownstreamProbeService` 周期性探测（Drasi `{ServerUri}/health`、各目标 `{BaseAddress}/api/integration/status`）：**任何 HTTP 响应（含 401/404/5xx）都证明网络可达**，只有超时或连接失败才判定不可达；探测不携带任何凭据。
+
+### 管理 API（`/admin/*`）
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /admin/outbox` | outbox 列表，支持 `status`（可重复）、`bindingId`、`sessionId`、`limit`（默认 50，上限 500）、`cursor`（`(CreatedAtUtc, Id)` 降序 keyset 分页）。响应为 `{items, nextCursor}`。 |
+| `GET /admin/outbox/{id}` | 单条详情，含幂等键、审计列（`replayCount`、`firstDispatchedAtUtc`、`lastReplayedAtUtc` 等）与渲染后的 Input 载荷。 |
+| `GET /admin/dead-letters` | 等价于 `status=DeadLetter` 的列表视图。 |
+| `POST /admin/outbox/{id}/replay` | 将死信重新置回 `Pending`。请求体 `{"reason":"..."}` 可选；非 Leader 返回 503 `admin.not_leader`，id 不存在返回 404 `outbox.not_found`，状态不可 replay（非死信/非终态）返回 409 `outbox.not_replayable`。replay 是 Raft 命令，提交后各节点投影一致生效；复用原持久化幂等键。 |
+| `GET /admin/cluster` | 本节点角色、quorum/writable、成员列表与日志索引。 |
+| `GET /admin/downstreams` | 最近一次下游探测快照（地址、可达性、延迟、错误类别）。 |
+| `GET /admin/health` | 各健康检查的名称/状态/耗时明细。 |
+
+鉴权规则：`/healthz` 与 `/readyz` 永远匿名；配置了 `DrasiWake:Admin:BearerToken` 后所有 `/admin/*` 调用必须携带正确的 Bearer token（SHA-256 摘要常量时间比较），缺失或错误返回 401 `admin.unauthorized`；**未配置 token 时仅允许本机回环调用**，非回环来源一律 401。错误响应统一为 `{"error":{"code","message"}}`。生产部署若需跨机访问管理 API，必须配置 token 并由网络边界限制来源；同机部署建议保持默认回环绑定。
+
+## drasiwakectl CLI 与死信 runbook
+
+`src/DrasiWake.Cli` 发布为 `drasiwakectl`，对管理 API 提供只读巡检与受控 replay：
+
+```
+drasiwakectl [--url <uri>] [--token <token>] [--json] <command>
+
+  outbox list        [--status <s>]... [--binding <id>] [--session <id>] [--limit <n>] [--cursor <c>]
+  outbox get         <id>
+  outbox dead-letters [--limit <n>] [--cursor <c>]
+  outbox replay      <id> [--reason <text>] [--yes]
+  cluster status
+  downstreams
+  health             [--json]
+```
+
+- `--url` 默认 `http://127.0.0.1:5103`，可用环境变量 `DRASIWAKE_ADMIN_URL`；`--token` 对应 `DRASIWAKE_ADMIN_TOKEN`。
+- `--json` 输出机器可读 JSON（可管道给 `jq`）；默认表格式输出。
+- 退出码契约：`0` 成功；`1` 用法错误（含 replay 未带 `--yes` 的确认中止）；`2` 连接失败/超时；`3` 服务端业务错误（如 `outbox.not_replayable`）。
+
+死信处理 runbook：
+
+1. `drasiwakectl outbox dead-letters` 查看待处理死信，确认 `BINDING`/`SKILL`/`TARGET` 与失败类别。
+2. `drasiwakectl outbox get <id>` 查看完整 Input 载荷、幂等键与审计列，结合 `LastErrorCode` 排因（契约不匹配、Gateway 不确定结果、重试耗尽等）。
+3. 修复根因后执行 `drasiwakectl outbox replay <id> --reason "修复说明" --yes`。不带 `--yes` 时 CLI 只打印目标行摘要并退出 1，不会触发 replay（双确认设计，防误触）。
+4. `drasiwakectl outbox get <id>` 复核：状态应回到 `Pending`、`replayCount` 加一、`lastReplayedAtUtc` 更新；分发器按既有重试策略重新调用 Gateway，Gateway 以同一幂等键受理。
+
 ## 三节点 HA 部署
 
 保持默认 `appsettings.json` 为无密钥的 `SingleNode`；上面的 `dotnet run` 开发启动不变，单节点也使用 Raft 命令而不是另一条本地写入路径。部署示例：
 
-- [node-a.json](examples/raft/node-a.json)：`node-a`，Raft `https://node-a.example.test:5101/`，管理 `https://node-a.example.test:5102/`，目录 `C:\DrasiWake\node-a\sonnetdb` / `C:\DrasiWake\node-a\raft`。
-- [node-b.json](examples/raft/node-b.json)：`node-b`，Raft `https://node-b.example.test:5101/`，管理 `https://node-b.example.test:5102/`，目录 `C:\DrasiWake\node-b\sonnetdb` / `C:\DrasiWake\node-b\raft`。
-- [node-c.json](examples/raft/node-c.json)：`node-c`，Raft `https://node-c.example.test:5101/`，管理 `https://node-c.example.test:5102/`，目录 `C:\DrasiWake\node-c\sonnetdb` / `C:\DrasiWake\node-c\raft`。
+- [node-a.json](examples/raft/node-a.json)：`node-a`，Raft `https://node-a.example.test:5101/`，管理 `https://node-a.example.test:5102/`，管理 API `http://node-a.example.test:5103/`，目录 `C:\DrasiWake\node-a\sonnetdb` / `C:\DrasiWake\node-a\raft`。
+- [node-b.json](examples/raft/node-b.json)：`node-b`，Raft `https://node-b.example.test:5101/`，管理 `https://node-b.example.test:5102/`，管理 API `http://node-b.example.test:5103/`，目录 `C:\DrasiWake\node-b\sonnetdb` / `C:\DrasiWake\node-b\raft`。
+- [node-c.json](examples/raft/node-c.json)：`node-c`，Raft `https://node-c.example.test:5101/`，管理 `https://node-c.example.test:5102/`，管理 API `http://node-c.example.test:5103/`，目录 `C:\DrasiWake\node-c\sonnetdb` / `C:\DrasiWake\node-c\raft`。
 
 这些是可由 Host settings 校验的配置示例，不是开箱即用的部署：替换 DNS、Drasi/Gateway 服务地址、注册表和证书路径；确保三个注册表、schema、应用/命令/envelope 版本和非密钥配置指纹一致。`production-gateway` 必须与注册表的 `openClawTarget` 一致。将每个示例复制为对应节点发布目录的 `appsettings.json`，或由部署配置提供程序加载等价键值；Host 不会自动读取 `docs\examples`。每台节点的 DNS 必须解析到本机可绑定地址，Raft 和管理端口分别允许节点间 HTTP/2 TLS 通信。
 
@@ -81,6 +141,9 @@ outbox 状态说明：
 | `DrasiWake:Cluster:Management:Address` | HTTPS，TCP 端口必须与本节点 Raft ListenAddress 不同。 |
 | `DrasiWake:Cluster:Management:BearerToken` | 所有节点共享的必需管理凭据，仅 secret provider 注入，环境键 `DrasiWake__Cluster__Management__BearerToken`。 |
 | `DrasiWake:Cluster:SnapshotFrequency` | 必需正整数，示例 `1000`；应用此数量业务命令后导出完整投影快照。 |
+| `DrasiWake:Admin:ApiAddress` | 管理 API 监听地址（示例 `http://node-x.example.test:5103/`）；TCP 端口必须与本节点 Raft 监听端口、管理端口互不相同，禁止通配绑定。 |
+| `DrasiWake:Admin:DownstreamProbeInterval` | 正的时间间隔，示例 `00:00:10`。 |
+| `DrasiWake:Admin:BearerToken` | 跨机访问 `/admin/*` 时必需；仅 secret provider 注入，环境键 `DrasiWake__Admin__BearerToken`。未配置时管理 API 仅接受本机回环调用。 |
 
 密钥由环境变量、.NET User Secrets（开发）或部署 secret provider 提供。上述键名不含真实凭据；不要在示例 JSON、注册表、命令行参数或日志中放密码/token。按命名 Gateway 的键 `DrasiWake__OpenClaw__Targets__production-gateway__BearerToken` 独立注入其凭据。共享管理 token 不是客户端证书认证：管理 RPC 要求 TLS 和 Bearer，Raft 网络应额外由网络边界保护。
 
@@ -123,6 +186,8 @@ HA 指标均使用相同 Meter，索引差单位为 entry，时长单位为 ms�
 | `drasiwake.raft.membership` | Add/Remove RPC 的结果次数，`operation=add/remove` 和固定 `result` 类别；无 member 标签。 |
 | `drasiwake.raft.leader.recovery.duration` | epoch 开始到恢复/Worker 启动完成（或失败/取消）的耗时，固定 `result`。 |
 | `drasiwake.raft.failover.duration` | 本节点从观察到不可写（含初始 Follower 等待）到再次作为有 quorum 的 Leader 完成恢复的耗时；不是客户端或集群全局 SLA。 |
+| `drasiwake.health.checks` | `/readyz` 每次聚合的健康检查计数，`status=healthy/degraded/unhealthy`；持续 `degraded/unhealthy` 是排查 `/readyz` 降级的第一入口。 |
+| `drasiwake.downstream.probe.failures` | 下游连通性探测失败次数，`downstream=drasi/<target>`、`errorClass=timeout/connect/…`；持续增长说明到 Drasi 或某 OpenClaw 目标的链路异常。 |
 
 `raft.leader.recovery` Activity 包含恢复结果；`raft.membership` Activity 包含 `operation`、`result` 和稳定哈希 `member.id`。成员结果的固定集合为 `succeeded`、`failed`、`cancelled`、`unauthenticated`、`disabled`、`invalid-endpoint`、`invalid-management-endpoint`、`stale-leader`、`no-quorum`、`duplicate-endpoint`、`duplicate-node-id`、`member-not-found`、`last-member`、`incompatible-member`、`tls-trust-failure`、`remote-auth-failure`、`remote-incompatible`、`compatibility-unavailable`、`leader-unavailable`、`membership-not-committed`、`membership-change-failed`；未知类别归为 `failed`。原始 NodeId、URL、token、证书密码、fact 和异常文本不进入应用日志、metric 标签或上述 Activity。建议按部署的 resource 属性区分节点，而不是把 NodeId/endpoint 变成 metric 维度。观察注册在 leadership watcher 结束时释放，重启不会留下旧节点 gauge。
 

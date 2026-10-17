@@ -71,10 +71,12 @@ public sealed class ReplicatedProjectionTests
             ReplicatedBridgeCommand.Create(BridgeCommandKind.UpsertKeyMapping,
                 new UpsertKeyMappingPayload(mapping)),
             ReplicatedBridgeCommand.Create(BridgeCommandKind.RemoveKeyMapping,
-                new RemoveKeyMappingPayload("scope", "identity"))
+                new RemoveKeyMappingPayload("scope", "identity")),
+            ReplicatedBridgeCommand.Create(BridgeCommandKind.ReplayDeadLetter,
+                new ReplayDeadLetterPayload(wake.Id, now, "operator-replay"))
         };
 
-        Assert.Equal(15, Enum.GetValues<BridgeCommandKind>().Length);
+        Assert.Equal(16, Enum.GetValues<BridgeCommandKind>().Length);
         foreach (var command in commands)
         {
             var restored = ReplicatedBridgeCommand.Deserialize(command.Serialize());
@@ -256,9 +258,18 @@ public sealed class ReplicatedProjectionTests
         var store = database.Store;
         var claimTime = DateTimeOffset.UtcNow;
 
+        var appliedBefore = await store.GetLastAppliedIndexAsync(TestContext.Current.CancellationToken);
         var candidates = await store.LoadDispatchableCandidatesAsync(
             claimTime, 1, TestContext.Current.CancellationToken);
+        var candidatesAgain = await store.LoadDispatchableCandidatesAsync(
+            claimTime, 1, TestContext.Current.CancellationToken);
+        var appliedAfter = await store.GetLastAppliedIndexAsync(TestContext.Current.CancellationToken);
+
         Assert.Equal(first.Id, Assert.Single(candidates).Id);
+        Assert.Equal(
+            candidates.Select(item => (item.Id, item.Status, item.NextAttemptAtUtc)),
+            candidatesAgain.Select(item => (item.Id, item.Status, item.NextAttemptAtUtc)));
+        Assert.Equal(appliedBefore, appliedAfter);
         Assert.All(await database.ReadOutboxAsync(), item => Assert.Equal(WakeOutboxStatus.Pending, item.Status));
 
         var claim = ReplicatedBridgeCommand.Create(
@@ -292,6 +303,189 @@ public sealed class ReplicatedProjectionTests
         Assert.Equal(WakeOutboxStatus.RetryScheduled, row.Status);
         Assert.Equal(recoveredAt, row.NextAttemptAtUtc);
         Assert.Equal("dispatch.recovered", row.LastErrorCode);
+    }
+
+    [Fact]
+    public async Task Reclaim_after_recovery_does_not_overwrite_FirstDispatchedAt()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var wake = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-5));
+        await database.InsertOutboxAsync(wake);
+        var store = database.Store;
+
+        var firstClaimAt = Ms(DateTimeOffset.UtcNow.AddMinutes(-4));
+        var firstClaim = ReplicatedBridgeCommand.Create(
+            BridgeCommandKind.ClaimDispatchable,
+            new ClaimDispatchablePayload([wake.Id], firstClaimAt, Guid.NewGuid()));
+        await store.ApplyReplicatedCommandAsync(firstClaim, 1, TestContext.Current.CancellationToken);
+        var recoveredAt = firstClaimAt.AddMinutes(1);
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.RecoverInterruptedDispatches,
+                new RecoverInterruptedDispatchesPayload(recoveredAt)),
+            2, TestContext.Current.CancellationToken);
+        var secondClaimAt = firstClaimAt.AddMinutes(2);
+        var secondClaim = ReplicatedBridgeCommand.Create(
+            BridgeCommandKind.ClaimDispatchable,
+            new ClaimDispatchablePayload([wake.Id], secondClaimAt, Guid.NewGuid()));
+        await store.ApplyReplicatedCommandAsync(secondClaim, 3, TestContext.Current.CancellationToken);
+
+        var row = Assert.Single(await database.ReadOutboxAsync());
+        Assert.Equal(WakeOutboxStatus.Dispatching, row.Status);
+        Assert.Equal(firstClaimAt, row.FirstDispatchedAtUtc);
+        Assert.NotEqual(secondClaimAt, row.FirstDispatchedAtUtc);
+        Assert.Equal(secondClaim.CommandId, row.ClaimCommandId);
+    }
+
+    [Fact]
+    public async Task Dead_letter_replay_resets_dispatch_state_and_reuses_idempotency_key()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var wake = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-5));
+        await database.InsertOutboxAsync(wake);
+        var store = database.Store;
+
+        var claimAt = Ms(DateTimeOffset.UtcNow.AddMinutes(-4));
+        var claim = ReplicatedBridgeCommand.Create(
+            BridgeCommandKind.ClaimDispatchable,
+            new ClaimDispatchablePayload([wake.Id], claimAt, Guid.NewGuid()));
+        await store.ApplyReplicatedCommandAsync(claim, 1, TestContext.Current.CancellationToken);
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.MarkDeadLetter,
+                new MarkDeadLetterPayload(wake.Id, "dispatch.retry_exhausted")),
+            2, TestContext.Current.CancellationToken);
+
+        var firstReplayAt = claimAt.AddMinutes(10);
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.ReplayDeadLetter,
+                new ReplayDeadLetterPayload(wake.Id, firstReplayAt, "operator-replay")),
+            3, TestContext.Current.CancellationToken);
+
+        var row = Assert.Single(await database.ReadOutboxAsync());
+        Assert.Equal(WakeOutboxStatus.Pending, row.Status);
+        Assert.Equal(wake.IdempotencyKey, row.IdempotencyKey);
+        Assert.Null(row.ClaimCommandId);
+        Assert.Equal(firstReplayAt, row.NextAttemptAtUtc);
+        Assert.Equal("dispatch.replayed", row.LastErrorCode);
+        Assert.Equal(1, row.ReplayCount);
+        Assert.Equal(firstReplayAt, row.LastReplayedAtUtc);
+        Assert.Equal(claimAt, row.FirstDispatchedAtUtc);
+
+        var secondReplayAt = firstReplayAt.AddMinutes(5);
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.MarkDeadLetter,
+                new MarkDeadLetterPayload(wake.Id, "dispatch.retry_exhausted")),
+            4, TestContext.Current.CancellationToken);
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.ReplayDeadLetter,
+                new ReplayDeadLetterPayload(wake.Id, secondReplayAt, "operator-replay-2")),
+            5, TestContext.Current.CancellationToken);
+
+        row = Assert.Single(await database.ReadOutboxAsync());
+        Assert.Equal(WakeOutboxStatus.Pending, row.Status);
+        Assert.Equal(2, row.ReplayCount);
+        Assert.Equal(secondReplayAt, row.LastReplayedAtUtc);
+        Assert.Equal(claimAt, row.FirstDispatchedAtUtc);
+    }
+
+    [Fact]
+    public async Task Replay_rejects_states_that_are_not_dead_letter_or_superseded()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var wake = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-5));
+        await database.InsertOutboxAsync(wake);
+        var store = database.Store;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.ReplayDeadLetter,
+                new ReplayDeadLetterPayload(wake.Id, DateTimeOffset.UtcNow, "operator-replay")),
+            1, TestContext.Current.CancellationToken).AsTask());
+        Assert.Equal(WakeOutboxStatus.Pending, Assert.Single(await database.ReadOutboxAsync()).Status);
+    }
+
+    [Fact]
+    public async Task Supersede_records_the_originating_outbox_when_a_successor_exists()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var stale = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-5)) with { SnapshotFingerprint = "stale-fingerprint" };
+        var successor = CreateWake(DateTimeOffset.UtcNow) with { SnapshotFingerprint = "fresh-fingerprint" };
+        await database.InsertOutboxAsync(stale, successor);
+        var store = database.Store;
+
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.SupersedePendingWakes,
+                new SupersedePendingWakesPayload(
+                    stale.BindingId, stale.SessionId, successor.SnapshotFingerprint, successor.Id)),
+            1, TestContext.Current.CancellationToken);
+
+        var rows = await database.ReadOutboxAsync();
+        var staleRow = rows.Single(item => item.Id == stale.Id);
+        var successorRow = rows.Single(item => item.Id == successor.Id);
+        Assert.Equal(WakeOutboxStatus.Superseded, staleRow.Status);
+        Assert.Equal("snapshot.superseded", staleRow.LastErrorCode);
+        Assert.Equal(successor.Id, staleRow.SupersededByOutboxId);
+        Assert.Equal(WakeOutboxStatus.Pending, successorRow.Status);
+        Assert.Null(successorRow.SupersededByOutboxId);
+    }
+
+    [Fact]
+    public async Task Supersede_without_successor_leaves_the_originating_reference_empty()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var stale = CreateWake(DateTimeOffset.UtcNow.AddMinutes(-5)) with { SnapshotFingerprint = "stale-fingerprint" };
+        await database.InsertOutboxAsync(stale);
+        var store = database.Store;
+
+        await store.ApplyReplicatedCommandAsync(
+            ReplicatedBridgeCommand.Create(
+                BridgeCommandKind.SupersedePendingWakes,
+                new SupersedePendingWakesPayload(
+                    stale.BindingId, stale.SessionId, "fresh-fingerprint", null)),
+            1, TestContext.Current.CancellationToken);
+
+        var row = Assert.Single(await database.ReadOutboxAsync());
+        Assert.Equal(WakeOutboxStatus.Superseded, row.Status);
+        Assert.Null(row.SupersededByOutboxId);
+    }
+
+    [Fact]
+    public async Task Snapshot_round_trip_preserves_audit_columns()
+    {
+        await using var source = await TestDatabase.CreateAsync();
+        await using var target = await TestDatabase.CreateAsync();
+        var timestamp = DateTimeOffset.Parse("2026-10-07T01:02:03.456Z");
+        await source.InsertSnapshotRowsAsync(
+            new SubscriptionSnapshot("query-key", "https://drasi", null, "query", true, timestamp, null, null),
+            new SnapshotCheckpointSnapshot("binding", "session", "fingerprint", timestamp),
+            new KeyMappingSnapshot("scope", "identity", "session", "active", timestamp),
+            new WakeOutboxSnapshot(
+                Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                "binding", "session", "fingerprint", "skill", null, """{"a":[1,true],"b":null}""",
+                "v1", "idem-key", 3, timestamp, timestamp.AddMinutes(2), WakeOutboxStatus.RetryScheduled,
+                null, "trace", "dispatch.recovered", timestamp.AddDays(2), 7,
+                "claim-command-id", timestamp.AddMinutes(1),
+                Guid.Parse("22222222-2222-2222-2222-222222222222"), 2, timestamp.AddMinutes(9)),
+            lastAppliedIndex: 4,
+            lastAppliedCommandId: "command-4",
+            configurationFingerprint: "config-4");
+
+        var snapshot = await source.Store.ExportSnapshotAsync(TestContext.Current.CancellationToken);
+        await target.Store.RestoreSnapshotAsync(snapshot, TestContext.Current.CancellationToken);
+        var restored = await target.Store.ExportSnapshotAsync(TestContext.Current.CancellationToken);
+        var outboxRow = Assert.Single(restored.WakeOutbox);
+
+        Assert.Equal(timestamp.AddMinutes(1), outboxRow.FirstDispatchedAtUtc);
+        Assert.Equal(Guid.Parse("22222222-2222-2222-2222-222222222222"), outboxRow.SupersededByOutboxId);
+        Assert.Equal(2, outboxRow.ReplayCount);
+        Assert.Equal(timestamp.AddMinutes(9), outboxRow.LastReplayedAtUtc);
+        Assert.Equal("claim-command-id", outboxRow.ClaimCommandId);
+        Assert.Equal(JsonSerializer.Serialize(snapshot.WakeOutbox), JsonSerializer.Serialize(restored.WakeOutbox));
     }
 
     [Fact]
@@ -544,8 +738,10 @@ public sealed class ReplicatedProjectionTests
         Assert.Equal(JsonSerializer.Serialize(before), JsonSerializer.Serialize(after));
     }
 
-    private static WakeOutboxItem CreateWake(DateTimeOffset createdAtUtc) => new(
-        Guid.NewGuid(),
+    private static DateTimeOffset Ms(DateTimeOffset value) =>
+        DateTimeOffset.FromUnixTimeMilliseconds(value.ToUnixTimeMilliseconds());
+
+    private static WakeOutboxItem CreateWake(DateTimeOffset createdAtUtc) => new(        Guid.NewGuid(),
         "binding",
         "session",
         "fingerprint",
@@ -675,6 +871,11 @@ public sealed class ReplicatedProjectionTests
                 InvocationId = outbox.InvocationId,
                 TraceId = outbox.TraceId,
                 LastErrorCode = outbox.LastErrorCode,
+                ClaimCommandId = outbox.ClaimCommandId,
+                FirstDispatchedAtUtc = outbox.FirstDispatchedAtUtc,
+                SupersededByOutboxId = outbox.SupersededByOutboxId,
+                ReplayCount = outbox.ReplayCount,
+                LastReplayedAtUtc = outbox.LastReplayedAtUtc,
                 RetainUntilUtc = outbox.RetainUntilUtc,
                 Version = outbox.Version
             });
@@ -697,7 +898,9 @@ public sealed class ReplicatedProjectionTests
                     item.Id, item.BindingId, item.SessionId, item.SnapshotFingerprint, item.Skill,
                     item.OpenClawTarget, item.InputJson, item.ContractVersion, item.IdempotencyKey,
                     item.AttemptCount, item.CreatedAtUtc, item.NextAttemptAtUtc, item.Status,
-                    item.InvocationId, item.TraceId, item.LastErrorCode, item.RetainUntilUtc, item.Version))
+                    item.InvocationId, item.TraceId, item.LastErrorCode, item.RetainUntilUtc, item.Version,
+                    item.ClaimCommandId, item.FirstDispatchedAtUtc, item.SupersededByOutboxId,
+                    item.ReplayCount, item.LastReplayedAtUtc))
                 .ToListAsync(TestContext.Current.CancellationToken);
         }
 

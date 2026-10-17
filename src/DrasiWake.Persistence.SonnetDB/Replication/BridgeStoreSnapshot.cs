@@ -57,4 +57,8 @@ public sealed record WakeOutboxSnapshot(
     string? LastErrorCode,
     DateTimeOffset? RetainUntilUtc,
     int Version,
-    string? ClaimCommandId = null);
+    string? ClaimCommandId = null,
+    DateTimeOffset? FirstDispatchedAtUtc = null,
+    Guid? SupersededByOutboxId = null,
+    int ReplayCount = 0,
+    DateTimeOffset? LastReplayedAtUtc = null);

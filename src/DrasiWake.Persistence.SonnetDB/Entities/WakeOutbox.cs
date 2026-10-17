@@ -21,6 +21,10 @@ public sealed class WakeOutbox
     public string? TraceId { get; set; }
     public string? LastErrorCode { get; set; }
     public string? ClaimCommandId { get; set; }
+    public DateTimeOffset? FirstDispatchedAtUtc { get; set; }
+    public Guid? SupersededByOutboxId { get; set; }
+    public int ReplayCount { get; set; }
+    public DateTimeOffset? LastReplayedAtUtc { get; set; }
     public DateTimeOffset? RetainUntilUtc { get; set; }
     public int Version { get; set; }
 }

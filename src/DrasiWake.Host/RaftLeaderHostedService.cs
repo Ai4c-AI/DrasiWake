@@ -79,7 +79,8 @@ public sealed class DotNextRaftLeadership(IRaftCluster cluster, TimeProvider tim
         }
     }
 
-    private BridgeTelemetry.RaftNodeObservation ObserveNode()
+    /// <summary>Current Raft index observation, used by readiness checks without extending the interface.</summary>
+    public BridgeTelemetry.RaftNodeObservation ObserveNode()
     {
         var trail = _cluster.AuditTrail;
         return new(IsLeader, HasQuorum, _cluster.Leader is not null,

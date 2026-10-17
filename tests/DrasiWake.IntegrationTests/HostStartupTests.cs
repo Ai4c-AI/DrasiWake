@@ -510,7 +510,9 @@ public sealed class HostStartupTests
             ["DrasiWake:Database:Path"] = databasePath,
             ["DrasiWake:Cluster:ListenAddress"] = $"http://127.0.0.1:{port}/",
             ["DrasiWake:Cluster:InitialMembers:0"] = $"http://127.0.0.1:{port}/",
-            ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(root, "raft")
+            ["DrasiWake:Cluster:RaftDataPath"] = Path.Combine(root, "raft"),
+            ["DrasiWake:Admin:ApiAddress"] = $"http://127.0.0.1:{GetAvailablePort()}/",
+            ["DrasiWake:Admin:DownstreamProbeInterval"] = "00:01:00"
         });
         using var host = DrasiWakeHostBuilder.CreateHost(configuration);
 
@@ -569,7 +571,9 @@ public sealed class HostStartupTests
             ["DrasiWake:Cluster:InitialMembers:2"] = $"https://127.0.0.1:{GetAvailablePort()}/",
             ["DrasiWake:Cluster:Certificate:Path"] = certificatePath,
             ["DrasiWake:Cluster:Certificate:Password"] = certificatePassword,
-            ["DrasiWake:Cluster:Management:Address"] = managementAddress.ToString()
+            ["DrasiWake:Cluster:Management:Address"] = managementAddress.ToString(),
+            ["DrasiWake:Admin:ApiAddress"] = $"http://127.0.0.1:{GetAvailablePort()}/",
+            ["DrasiWake:Admin:DownstreamProbeInterval"] = "00:01:00"
         });
         using var host = DrasiWakeHostBuilder.CreateHost(config);
 

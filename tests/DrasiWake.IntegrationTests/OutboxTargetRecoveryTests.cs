@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using DrasiWake.Host;
 using DrasiWake.Core.Domain;
 using DrasiWake.Persistence.SonnetDB;
@@ -183,7 +185,9 @@ public sealed class OutboxTargetRecoveryTests
                 "src",
                 "DrasiWake.Host",
                 "contracts",
-                "sample-binding.yaml")
+                "sample-binding.yaml"),
+            ["DrasiWake:Admin:ApiAddress"] = $"http://127.0.0.1:{ReservePort()}/",
+            ["DrasiWake:Admin:DownstreamProbeInterval"] = "00:01:00"
         };
         if (additionalConfiguration is not null)
         {
@@ -198,6 +202,20 @@ public sealed class OutboxTargetRecoveryTests
             services.AddSingleton<IRaftCommandExecutor>(provider =>
                 new BridgeTestFixture.ProjectionBackedExecutor(
                     provider.GetRequiredService<IRaftBridgeProjection>()))));
+    }
+
+    private static int ReservePort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     private static async Task PrepareLeaderAsync(IHost host)

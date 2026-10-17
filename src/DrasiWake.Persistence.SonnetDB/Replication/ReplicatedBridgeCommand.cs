@@ -22,7 +22,8 @@ public enum BridgeCommandKind
     UpsertSubscription,
     RemoveSubscription,
     UpsertKeyMapping,
-    RemoveKeyMapping
+    RemoveKeyMapping,
+    ReplayDeadLetter
 }
 
 public sealed record ReplicatedBridgeCommand(
@@ -193,7 +194,11 @@ public sealed record ReplicatedBridgeCommand(
 
 public sealed record CreateOrUpdatePendingWakePayload(WakeOutboxItem Item);
 public sealed record RecordRejectedWakePayload(WakeOutboxItem Item, string ReasonCode);
-public sealed record SupersedePendingWakesPayload(string BindingId, string SessionId, string CurrentFingerprint);
+public sealed record SupersedePendingWakesPayload(
+    string BindingId,
+    string SessionId,
+    string CurrentFingerprint,
+    Guid? SupersededByOutboxId = null);
 public sealed record ClaimDispatchablePayload(
     IReadOnlyList<Guid> OutboxIds,
     DateTimeOffset ClaimedAtUtc,
@@ -220,3 +225,4 @@ public sealed record UpsertSubscriptionPayload(SubscriptionSnapshot Subscription
 public sealed record RemoveSubscriptionPayload(string QueryKey);
 public sealed record UpsertKeyMappingPayload(KeyMappingSnapshot Mapping);
 public sealed record RemoveKeyMappingPayload(string ContractScope, string CanonicalIdentity);
+public sealed record ReplayDeadLetterPayload(Guid OutboxId, DateTimeOffset ReplayedAtUtc, string? Reason);

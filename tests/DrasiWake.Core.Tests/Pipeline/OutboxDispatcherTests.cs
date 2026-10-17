@@ -10,7 +10,7 @@ namespace DrasiWake.Core.Tests.Pipeline;
 public sealed class OutboxDispatcherTests
 {
     [Fact]
-    public async Task Persists_pending_wake_before_calling_sink()
+    public async Task Persists_claimed_wake_before_calling_sink()
     {
         var binding = CreateBinding();
         var registry = CreateRegistry(binding);
@@ -22,8 +22,30 @@ public sealed class OutboxDispatcherTests
 
         await dispatcher.DispatchOneAsync(item, CancellationToken.None);
 
-        Assert.True(sink.SawPersistedPendingItem);
+        Assert.True(sink.SawPersistedClaimedItem);
         Assert.Equal(1, store.AcceptanceWrites);
+    }
+
+    [Fact]
+    public async Task Unclaimed_outbox_item_is_rejected_without_reaching_the_sink()
+    {
+        var binding = CreateBinding();
+        var store = new RecordingStore();
+        var unclaimedItem = CreateItem() with { Status = WakeOutboxStatus.Pending, FirstDispatchedAtUtc = null };
+        await store.CreateOrUpdatePendingWakeAsync(unclaimedItem, CancellationToken.None);
+        var sink = new CallCountingSink();
+        var dispatcher = new OutboxDispatcher(store, sink, CreateRegistry(binding));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => dispatcher.DispatchOneAsync(unclaimedItem, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => dispatcher.DispatchOneAsync(
+                unclaimedItem with { Status = WakeOutboxStatus.RetryScheduled }, CancellationToken.None));
+
+        Assert.Equal(0, sink.CallCount);
+        Assert.Equal(0, store.AcceptanceWrites);
+        Assert.Equal(0, store.RetryWrites);
+        Assert.Null(store.DeadLetterOutboxId);
     }
 
     [Fact]
@@ -139,24 +161,39 @@ public sealed class OutboxDispatcherTests
         0,
         DateTimeOffset.UtcNow,
         DateTimeOffset.UtcNow,
-        WakeOutboxStatus.Pending,
+        WakeOutboxStatus.Dispatching,
         null,
         null,
-        "sample-gateway");
+        "sample-gateway",
+        DateTimeOffset.UtcNow);
+
+    private sealed class CallCountingSink : IWakeSink
+    {
+        public int CallCount { get; private set; }
+
+        public ValueTask<WakeAcceptance> InvokeAsync(WakeRequest request, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return ValueTask.FromResult(new WakeAcceptance("invocation-1", DateTimeOffset.UtcNow));
+        }
+
+        public ValueTask<WakeExecutionStatus?> GetStatusAsync(WakeRequest request, CancellationToken cancellationToken)
+            => ValueTask.FromResult<WakeExecutionStatus?>(null);
+    }
 
     private sealed class StoreAssertingSink(
         RecordingStore store,
         Guid outboxId,
         WakeExecutionStatus? executionStatus = null) : IWakeSink
     {
-        public bool SawPersistedPendingItem { get; private set; }
+        public bool SawPersistedClaimedItem { get; private set; }
         public bool SawAcceptanceBeforeStatusRead { get; private set; }
         public WakeRequest? LastRequest { get; private set; }
 
         public ValueTask<WakeAcceptance> InvokeAsync(WakeRequest request, CancellationToken cancellationToken)
         {
             LastRequest = request;
-            SawPersistedPendingItem = store.Items.Any(item => item.Id == outboxId && item.Status == WakeOutboxStatus.Pending);
+            SawPersistedClaimedItem = store.Items.Any(item => item.Id == outboxId && item.Status == WakeOutboxStatus.Dispatching);
             return ValueTask.FromResult(new WakeAcceptance("invocation-1", DateTimeOffset.UtcNow));
         }
 
@@ -209,8 +246,11 @@ public sealed class OutboxDispatcherTests
         public ValueTask RecordRejectedWakeAsync(WakeOutboxItem item, string reasonCode, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
 
-        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, CancellationToken cancellationToken)
+        public ValueTask SupersedePendingWakesAsync(string bindingId, string sessionId, string currentFingerprint, Guid? supersededByOutboxId, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
+
+        public ValueTask<WakeOutboxItem> ReplayDeadLetterAsync(Guid outboxId, DateTimeOffset replayedAtUtc, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException("Dead-letter replay is not exercised by dispatcher tests.");
 
         public ValueTask<IReadOnlyList<WakeOutboxItem>> LoadDispatchableAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<WakeOutboxItem>>(Items);

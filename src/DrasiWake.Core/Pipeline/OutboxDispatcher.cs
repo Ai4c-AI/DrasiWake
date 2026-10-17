@@ -15,6 +15,10 @@ public sealed class OutboxDispatcher(
     public async Task DispatchOneAsync(WakeOutboxItem item, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(item);
+        if (item.Status != WakeOutboxStatus.Dispatching)
+            throw new InvalidOperationException(
+                $"Only claimed outbox items can be dispatched; item '{item.Id}' is in state '{item.Status}'. " +
+                "Dispatch input must come from IBridgeStore.LoadDispatchableAsync, which claims via a replicated command.");
         using var activity = BridgeTelemetry.StartDispatch(item);
         var binding = registry.Active.Bindings.FirstOrDefault(candidate => candidate.Id == item.BindingId);
         if (binding is null)

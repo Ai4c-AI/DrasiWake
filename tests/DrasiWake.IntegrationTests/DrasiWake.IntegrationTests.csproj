@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DrasiWake.Host\DrasiWake.Host.csproj" />
     <ProjectReference Include="..\..\src\DrasiWake.AppHost\DrasiWake.AppHost.csproj" />
+    <ProjectReference Include="..\..\src\DrasiWake.Cli\DrasiWake.Cli.csproj" />
     <ProjectReference Include="..\..\src\DrasiWake.Persistence.Raft\DrasiWake.Persistence.Raft.csproj" />
   </ItemGroup>
 

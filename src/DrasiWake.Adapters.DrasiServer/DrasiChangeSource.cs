@@ -11,6 +11,8 @@ public sealed class DrasiChangeSource : IChangeSource
     private readonly DrasiServerClient _client;
     private readonly DrasiServerOptions _options;
     private readonly TimeProvider _timeProvider;
+    private int connectedQueries;
+    private int visibleQueries;
 
     public DrasiChangeSource(
         DrasiServerClient client,
@@ -22,6 +24,12 @@ public sealed class DrasiChangeSource : IChangeSource
         _options.Validate();
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>Number of query SSE streams currently attached (excludes reconnect back-off windows).</summary>
+    public int ConnectedQueries => Volatile.Read(ref connectedQueries);
+
+    /// <summary>Number of queries the current watch loop subscribes to.</summary>
+    public int VisibleQueries => Volatile.Read(ref visibleQueries);
 
     public async IAsyncEnumerable<ChangeSignal> WatchAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -38,6 +46,7 @@ public sealed class DrasiChangeSource : IChangeSource
             SingleReader = true,
             SingleWriter = queries.Length == 1
         });
+        Interlocked.Exchange(ref visibleQueries, queries.Length);
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var workers = queries
             .Select(query => RunQueryAsync(query, channel.Writer, linkedCancellation.Token))
@@ -69,6 +78,7 @@ public sealed class DrasiChangeSource : IChangeSource
         }
         finally
         {
+            Interlocked.Exchange(ref visibleQueries, 0);
             linkedCancellation.Cancel();
             channel.Writer.TryComplete();
             await workersCompletion;
@@ -91,10 +101,18 @@ public sealed class DrasiChangeSource : IChangeSource
         {
             try
             {
-                await foreach (var signal in _client.AttachAsync(query, cancellationToken)
-                                   .WithCancellation(cancellationToken))
+                Interlocked.Increment(ref connectedQueries);
+                try
                 {
-                    await writer.WriteAsync(signal, cancellationToken);
+                    await foreach (var signal in _client.AttachAsync(query, cancellationToken)
+                                       .WithCancellation(cancellationToken))
+                    {
+                        await writer.WriteAsync(signal, cancellationToken);
+                    }
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref connectedQueries);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

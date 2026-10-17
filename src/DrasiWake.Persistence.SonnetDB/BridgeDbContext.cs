@@ -59,8 +59,10 @@ public sealed class BridgeDbContext(DbContextOptions<BridgeDbContext> options) :
             entity.Property(item => item.TraceId).HasMaxLength(256);
             entity.Property(item => item.LastErrorCode).HasMaxLength(256);
             entity.Property(item => item.ClaimCommandId).HasMaxLength(64);
+            entity.Property(item => item.SupersededByOutboxId).HasMaxLength(64);
             entity.Property(item => item.Version).IsConcurrencyToken();
             entity.HasIndex(item => new { item.NextAttemptAtUtc, item.CreatedAtUtc, item.Id });
+            entity.HasIndex(item => new { item.Status, item.CreatedAtUtc });
             entity.HasIndex(item => item.IdempotencyKey).IsUnique();
         });
 
